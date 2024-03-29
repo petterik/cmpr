@@ -51,6 +51,7 @@ We have a generic array implementation using arena allocation.
 - T_arena_push() and T_arena_pop() manage arena allocation stack.
 
 Note that spans uses .s for the array member, not .a like all of our generic array types.
+In particular projfiles (state->files) uses .a as it is a generic array type.
 
 spans_alloc returns a spans which has n equal to the number passed in.
 Typically the caller will either fill the number requested exactly, or will shorten n if fewer are used.
@@ -855,29 +856,31 @@ span out_compl() {
 
 /* Random or experimental prompts.
 
-You are writing a C program. You are not explaining how to write the code to me, rather I explain how to write the code to you and you actually write the code. Therefore do not include sample or "in actual implementation..." style comments. You are actually writing the production code, and it must be complete and functional.
+We are writing cmpr, which is a tool to interact with LLMs and is written in C.
 
 Here is information about spanio, the library we are using:
 
+Note that spanio is already included, so don't include header files (ever, for it or anything else).
 
---------
-
-Then we give it ctags
+$LIBRARY_INFO$
 
 Here's our ctags:
 
 ```
-[...]
+$CTAGS$
 ```
 
-If in the future you need to see the implementation of any of these functions, you can ask. Reply with "OK".
-
-
-
---------
-
+If in the future you need to see the implementation of any of these functions, you can ask. Confirm this by including "I can ask for function contents." in your reply.
 
 We have a few globals; to those already part of spanio (inp, out, cmp, etc.) we add state, a pointer to the ui_state struct, automatically available everywhere:
+
+#define CONFIG_FIELDS \
+X(projdir) \
+X(revdir) \
+X(tmpdir) \
+X(buildcmd) \
+X(cbcopy) \
+X(cbpaste)
 
 typedef struct ui_state {
     projfiles files;
@@ -889,20 +892,13 @@ typedef struct ui_state {
     span config_file_path;
     int terminal_rows;
     int terminal_cols;
+    int scrolled_lines;
     #define X(name) span name;
     CONFIG_FIELDS
     #undef X
 } ui_state;
 
 ui_state* state;
-
-#define CONFIG_FIELDS \
-X(projdir) \
-X(revdir) \
-X(tmpdir) \
-X(buildcmd) \
-X(cbcopy) \
-X(cbpaste)
 
 - projdir, location of the project directory that we are working with as a span
 - revdir, a span containing a relative or absolute path to where we store our revisions
@@ -914,10 +910,36 @@ X(cbpaste)
 The projfiles type is created by MAKE_ARENA and has the methods defined for our generic array types (with element type projfile).
 In particular, we use projfiles_alloc with a sufficient capacity in main() and then we use projfiles_push() whenever we populate a project file.
 
+In the library intro above there are some idioms and advice given at the very end. Extremely briefly, summarize these in bullet form, starting with "- spans uses .s not .a".
 
--------
+TODO: add the projfile type
 
 
-In the library intro there are some idioms and advice given at the end. Extremely briefly, summarize these in bullet form.
+--------
+
+
+
+This is called #langtable:
+
+```c
+$LANGTABLE$
+```
+
+Reply with "OK".
+
+
+
+
+(Note: we can figure out all the above from the #langtable and #replywithok tags on the block!)
+
+
+
+--------
+
+
+
+Similar for #all_functions (or maybe ctags is enough, but maybe if we only do it for cmpr.c).
+
+Note: `ctags spanio.c cmpr.c` probably the right command.
 
 */

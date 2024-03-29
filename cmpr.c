@@ -88,6 +88,45 @@ Reply only with code. Do not simplify, but include working code. If necessary, y
 /* import our library code */
 
 #include "spanio.c"
+/* #langtable #NaturalLanguageTabularProgramming #replywithok
+Here we have a table of languages that we support.
+
+(The columns are written as numbered items, for easier editing in text form.)
+
+1. Supported Language:
+
+C, Python, JavaScript
+
+2. Filename extension:
+
+C: .c
+Python: .py
+JavaScript: .js
+
+3. Find blocks implementation:
+
+C: find_blocks_by_type_c
+Python: find_blocks_by_type_python
+JavaScript: find_blocks_by_type_c
+
+4. Find blocks description string:
+
+C: Blocks start with a C-style block comment at the beginning of a line (no leading whitespace).
+Python: Blocks start with a triple-quoted string, also at the beginning of a line.
+JavaScript: Uses the same rules as C (block comment flush left starts a block).
+
+5. Block comment end description:
+
+C: Comment part ends with a C-style block comment that can end anywhere on a line.
+Python: The triple-quote end also has to be at the start of a line.
+JavaScript: Same as C.
+
+6. Default block comment to prompt pattern:
+
+C: "```c\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Do not include comments.\n"
+Python: "```python\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Avoid code_interpreter.\n"
+JavaScript: "```js\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Do not include comments.\n"
+*/
 /*
 We define CONFIG_FIELDS including all our known config settings, as they are used in several places (with X macros).
 
@@ -215,7 +254,7 @@ int main(int argc, char** argv) {
     span_arena_free();
     return 0;
 }
-/* #all_functions
+/* #all_functions #replywithok
 */
 
 void edit_current_block();
@@ -225,6 +264,8 @@ void replace_code_clipboard();
 void toggle_visual();
 void start_search();
 void settings_mode();
+span block_comment_part(span block);
+span comment_to_prompt(span comment);
 void send_to_clipboard(span prompt);
 void print_physical_lines(span, int);
 int print_matching_physical_lines(span, span);
@@ -386,16 +427,12 @@ In find_all_blocks, we find the blocks in each file.
 We are going to need to know how many blocks there are in all the files, and to store all of the blocks so that we can allocate a single spans to hold all of them at the end.
 Therefore we first allocate an array of the `spans` type, one per file.
 
-Then for each of the projfiles, we call find_blocks_by_type() to find the blocks in that file, and stash those temporarily on our array.
+Then for each of the projfiles, we call find_blocks_by_type() to find the blocks in that file (by language, actually, the second argument to this function), and stash those temporarily on our array.
 We also call block_sanity_check on the returned blocks for each file.
 
 Once we have all of the blocks for each of the files, we then can construct a new spans (using spans_alloc) of the right size, and we can copy all the blocks into this, which we store on the state.
 (We don't store the blocks per file anywhere, since we can always determine which file a block belongs to by comparing the block's span with the contents span on the projfile.)
 */
-
-spans find_blocks_by_type_python(span);
-spans find_blocks_by_type_c(span);
-spans find_blocks_by_type(span, span);
 
 void find_all_blocks() {
     spans* file_blocks = (spans*)malloc(state->files.n * sizeof(spans));
@@ -617,22 +654,26 @@ spans find_blocks_by_type_c(span file) {
     return blocks;
 }
 /*
-In `spans find_blocks_by_type(span,span)`, we take a span and a language, which is currently either C or Python.
+In `spans find_blocks_by_type(span,span)`, we take a span (a file's contents) and a language, which is any of the supported languages.
 
-We dispatch to another function that handles either language, and return the resulting spans.
+We dispatch to another function that handles that language appropriately, and return the resulting spans.
+
+We dispatch according to the "find blocks by language" implementation given by #langtable col. 3., above.
 
 If the language is not known, we prt, flush, exit as per usual.
 */
 
-spans find_blocks_by_type(span source, span language) {
+spans find_blocks_by_type(span file, span language) {
     if (span_eq(language, S("C"))) {
-        return find_blocks_by_type_c(source);
+        return find_blocks_by_type_c(file);
     } else if (span_eq(language, S("Python"))) {
-        return find_blocks_by_type_python(source);
+        return find_blocks_by_type_python(file);
+    } else if (span_eq(language, S("JavaScript"))) {
+        return find_blocks_by_type_c(file); // JavaScript uses the same rule as C for finding blocks.
     } else {
-        prt("Error: Unknown language\n");
+        prt("Error: Unsupported language '%.*s'.\n", len(language), language.buf);
         flush();
-        exit(EXIT_FAILURE);
+        exit(1);
     }
 }
 /*
@@ -1275,12 +1316,21 @@ In print_ruler we use prt to show
 - the number of blocks,
 - the currently selected block,
 - the scrolled lines plus one (i.e. the one-based index of the top visible line)
+- the filename of the current block (get the block by state->current_index, the file by file_for_block, and the file path from the projfile at that index on state). Note that 0 <= current_index < state->blocks.n is an invariant, and we don't need to check for it, but rather simply assume it here, indexing into blocks directly.
 
 all on a line without a newline.
+
+Our output reads as "Block n/N, Line L, File <path>", using the `%.*s` pattern for the filepath.
 */
 
 void print_ruler() {
-    prt("%d blocks, Block %d, Line %d", state->blocks.n, state->current_index + 1, state->scrolled_lines + 1);
+    span current_block = state->blocks.s[state->current_index];
+    int file_index = file_for_block(current_block);
+    projfile current_file = state->files.a[file_index];
+    char path_buf[2048] = {0}; // Assuming path lengths won't exceed 2047 characters + null terminator
+    s(path_buf, 2048, current_file.path);
+
+    prt("Block %d/%d, Line %d, File %s", state->current_index + 1, state->blocks.n, state->scrolled_lines + 1, path_buf);
 }
 /*
 In print_single_block_with_skipping we get a block index and a pagination index in the form of a number of lines already "scrolled off" above the top of the screen (skipped_lines).
@@ -1602,6 +1652,7 @@ For example, if there are three files, with languages C, Python, Python, then we
 
 Therefore, we maintain a local variable indicating the last-written language, initially empty of course.
 For each file, if the language is already equal to this, then we just print the file line, otherwise we print a language line first.
+When printing a language line, we put a blank line first, since these usually group related files together.
 
 As mentioned elsewhere, each conf line includes the key, a colon, space and the value, followed by newline.
 */
@@ -1611,7 +1662,7 @@ void save_conf_files() {
     for (int i = 0; i < state->files.n; i++) {
         if (!span_eq(last_written_language, state->files.a[i].language)) {
             last_written_language = state->files.a[i].language;
-            prt("language: %.*s\n", len(last_written_language), last_written_language.buf);
+            prt("\nlanguage: %.*s\n", len(last_written_language), last_written_language.buf);
         }
         prt("file: %.*s\n", len(state->files.a[i].path), state->files.a[i].path.buf);
     }
@@ -1690,6 +1741,7 @@ TODO: probably all the above "config-related metadata" should be in one place in
 For now, a local macro cleans up this code quite a bit.
 
 For each missing variable in the order given, we print the string after the colon above as a prompt to the user (and include the configuration parameter name).
+(We end the prompt with colon and newline, so the read_line shows up under it.)
 
 We then call read_line to get the new value from the user.
 For the buffer space to use we will first call cmp_compl() to get the complement of cmp space as a span.
@@ -1700,55 +1752,67 @@ Additional to the "normal" conf vars, we also have the files, and the language s
 
 First, it's a requirement that there be at least one file, even if it is empty, otherwise we have nowhere to put any blocks and no way to get things off the ground.
 Therefore if there are no files on the state, we will prompt the user to name one file that can be added to the project.
-We explain that at least one file is required otherwise there is nowhere to create any blocks and no way to proceed.
+Our prompt for this is "Enter at least one project file (e.g. main.c or main.py or index.js) where your blocks will be stored.".
 We then create this as an empty file if it does not already exist by calling add_projfile() with the path.
 Note that this function may fail, in which case it will return 0.
-If it fails, we just loop until it succeeds as there's no going forward without it.
+If it returns 0 (i.e. false), we loop until it returns positive, as there's no going forward without a place to store blocks.
 
 Next, if there is a file in projfiles that doesn't have a language set, then we tell the user that this is required and set the language on the projfile in this case.
-We tell them that the language must be either "Python" or "C", and determines how blocks start and also where the comment part ends and code part starts.
+We tell them that the language must be one of our supported languages (see #langtable above), and determines how blocks start and also where the comment part ends and code part starts.
+Our prompt for this is "Please specify a language for <file>, one of <list of languages>.", where the file is the path and the list of languages is from #langtable.
 
 Once we have set all the required conf vars, if any of them were missing, including any languages on the projfiles, or adding the first projfile, then we call save_conf() which just rewrites the conf file.
+To handle all of this we declare some int indicator(s) at the top of the function, set to 0 initially and use this to call save_conf() only if we changed some conf var.
 
-TODO: use the ensure_conf_var thing that we added after this
+[TODO: use the ensure_conf_var thing that we added after this (?)]
 */
 
 void check_conf_vars() {
-    #define CHECK_AND_SET(var, prompt) \
+    int confChanged = 0;
+    span cmpComplement = cmp_compl();
+
+    #define CHECK_SET(var, prompt) \
     if (empty(state->var)) { \
-        prt("%s\n", prompt); \
+        prt(prompt); \
         flush(); \
-        span input_space = cmp_compl(); \
-        state->var = read_line(&input_space); \
-        cmp.end = state->var.end; \
+        span input = read_line(&cmpComplement); \
+        cmp.end = input.end; \
+        state->var = input; \
+        confChanged = 1; \
     }
 
-    CHECK_AND_SET(revdir, "revdir: Path for revisions (.cmpr/revs is a good choice)");
-    CHECK_AND_SET(tmpdir, "tmpdir: Path for temp files (.cmpr/tmp is a good choice)");
+    CHECK_SET(revdir, "Enter the directory to save revisions (e.g., .cmpr/revs):\n")
+    CHECK_SET(tmpdir, "Enter the directory for temporary files (e.g., .cmpr/tmp):\n")
 
     if (state->files.n == 0) {
         while (1) {
-            prt("At least one file is required. Please specify a file path to add:\n");
+            prt("Enter at least one project file (e.g. main.c or main.py or index.js) where your blocks will be stored:\n");
             flush();
-            span input_space = cmp_compl();
-            span file_path_span = read_line(&input_space);
-            cmp.end = file_path_span.end;
-            if (add_projfile(file_path_span)) break;
+            span input = read_line(&cmpComplement);
+            cmp.end = input.end;
+            if (add_projfile(input)) {
+                confChanged = 1;
+                break;
+            }
         }
     }
 
-    for (int i = 0; i < state->files.n; ++i) {
+    for (int i = 0; i < state->files.n; i++) {
         if (empty(state->files.a[i].language)) {
-            prt("A language for each file is required. Please specify 'Python' or 'C' for the file: %.*s\n", len(state->files.a[i].path), state->files.a[i].path.buf);
+            prt("Please specify a language for %.*s, one of C, Python, JavaScript:\n", len(state->files.a[i].path), state->files.a[i].path.buf);
             flush();
-            span input_space = cmp_compl();
-            state->files.a[i].language = read_line(&input_space);
-            cmp.end = state->files.a[i].language.end;
+            span input = read_line(&cmpComplement);
+            cmp.end = input.end;
+            state->files.a[i].language = input;
+            confChanged = 1;
         }
     }
 
-    #undef CHECK_AND_SET
-    save_conf();
+    if (confChanged) {
+        save_conf();
+    }
+
+    #undef CHECK_SET
 }
 /*
 In ensure_conf_var() we are given a span, which must be one of the conf vars on the state, a message for the user to explain what the conf setting does and why it is required, and a default or current value that we can pass through to read_line.
@@ -1821,40 +1885,41 @@ void edit_current_block() {
 /*
 To generate a tmp filename for launching the user's editor, we return a string starting with state->tmpdir.
 For the filename part, we construct a timestamp in a compressed ISO 8601-like format, as YYYYMMDD-hhmmss with just a single dash as separator.
-We append a file extension: we use file_for_block and current_block to get the language for the current block and if it's C we add ".c" and if it's Python we add ".py" to the filename; otherwise we don't add anything.
+We append a file extension: we use file_for_block and current_block to get the language for the current block and add the appropriate extension, switching on the language and adding the appropriate filename extension from #langtable above.
+We are assure here that the language will be already set for every file, so if it is not recognized, it's acceptable to either crash (as this is a programming error) or simply to do nothing and carry on with no extension on added.
+(The only thing we don't want to do is add something ridiculous like ".txt".)
 We return a char* which the caller must free.
 Since state->tmpdir may or may not include a trailing slash we test for and handle both cases.
 */
 
-int file_for_block(span);
-
 char* tmp_filename() {
     time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    char time_str[16]; // Enough to hold YYYYMMDD-HHMMSS
-    strftime(time_str, sizeof(time_str), "%Y%m%d-%H%M%S", tm);
+    struct tm *tm_struct = localtime(&now);
 
-    int file_index = file_for_block(state->blocks.s[state->current_index]);
-    char* extension = "";
-    if (span_eq(state->files.a[file_index].language, S("C"))) {
-        extension = ".c";
-    } else if (span_eq(state->files.a[file_index].language, S("Python"))) {
-        extension = ".py";
+    char timestamp[20]; // YYYYMMDD-hhmmss
+    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", tm_struct);
+
+    char extension[5]; // Up to 4 chars + null terminator
+    span language = state->current_language;
+    if (span_eq(language, S("C"))) {
+        snprintf(extension, sizeof(extension), ".c");
+    } else if (span_eq(language, S("Python"))) {
+        snprintf(extension, sizeof(extension), ".py");
+    } else if (span_eq(language, S("JavaScript"))) {
+        snprintf(extension, sizeof(extension), ".js");
+    } else {
+        extension[0] = '\0'; // No recognized language, no extension.
     }
 
-    int need_slash = state->tmpdir.end[-1] != '/';
-    int total_length = (state->tmpdir.end - state->tmpdir.buf) + strlen(time_str) + strlen(extension) + 1 + need_slash;
-    char* filename = malloc(total_length);
-    if (!filename) {
-        perror("Failed to allocate memory for filename");
-        exit(EXIT_FAILURE);
+    int tmpdir_len = len(state->tmpdir);
+    int needs_slash = (state->tmpdir.buf[tmpdir_len - 1] != '/');
+    int filename_len = tmpdir_len + needs_slash + sizeof(timestamp) + sizeof(extension);
+    char *filename = malloc(filename_len);
+    if (needs_slash) {
+        snprintf(filename, filename_len, "%.*s/%s%s", tmpdir_len, state->tmpdir.buf, timestamp, extension);
+    } else {
+        snprintf(filename, filename_len, "%.*s%s%s", tmpdir_len, state->tmpdir.buf, timestamp, extension);
     }
-
-    snprintf(filename, total_length, "%.*s%s%s%s", 
-             (int)(state->tmpdir.end - state->tmpdir.buf), state->tmpdir.buf, 
-             need_slash ? "/" : "", 
-             time_str, 
-             extension);
 
     return filename;
 }
@@ -2097,10 +2162,6 @@ span comment_to_prompt(span);
 void send_to_clipboard(span);
 */
 
-span block_comment_part(span block);
-span comment_to_prompt(span comment);
-void send_to_clipboard(span prompt);
-
 void rewrite_current_block_with_llm() {
   if (state->current_index < 0 || state->current_index >= state->blocks.n) {
     fprintf(stderr, "Invalid block index.\n");
@@ -2131,56 +2192,62 @@ void rewrite_current_block_with_llm() {
 
 /*
 To split out the block_comment_part of a span, we first write two helper functions, one for C and one for Python.
+Others will be added but these are the only ones we've needed so far.
 
-Then we dispatch based on the language on the projfile which we lookup using file_for_block().
-If this span contains "Python" we call the Python version, and otherwise we call the C version (which therefore is our default).
+Then we dispatch based on the language on the projfile which we lookup using file_for_block(), and .language on the file in the state.
+Previously, if this span contained "Python" we called the Python version, and otherwise we called the C version (which was therefore our default).
+Now, however, we look up the language in the #langtable above and call the find block comment end implementation.
+For example, the third language we support is JS, which uses the same implementation as C.
 
-The helper function takes a span and returns an index offset to the location of the "block comment part terminator".
+The helper function always takes a span and returns an index offset to the location of the "block comment part terminator".
 For Python this is the second occurrence of the triple doublequote in the block, and for C it is star slash.
 
 In the main function block_comment_part, we return the span up to and including the comment part terminator, and also including any newlines and whitespace after it.
+This means each of the helper functions returns the offset at which the comment terminator ends, and the main function includes a while isspace loop to advance past any whitespace.
+(Among other things, this ensures that "R" does not unduly change the amount of whitespace mid-block.)
+
+All three functions are written below.
 */
 
-int find_block_comment_end_c(span block) {
-    for (int i = 0; i < len(block) - 1; ++i) {
+static int find_block_comment_end_c(span block) {
+    for (int i = 0; i < len(block) - 1; i++) {
         if (block.buf[i] == '*' && block.buf[i + 1] == '/') {
-            return i + 2; // Include the "*/" in the index
+            return i + 2; // Return the index just past the terminator
         }
     }
-    return len(block);
+    return len(block); // If not found, return the length of the block
 }
 
-int find_block_comment_end_python(span block) {
-    int quote_count = 0;
-    for (int i = 0; i < len(block) - 2; ++i) {
+static int find_block_comment_end_python(span block) {
+    int count = 0;
+    for (int i = 0; i < len(block) - 2; i++) {
         if (block.buf[i] == '"' && block.buf[i + 1] == '"' && block.buf[i + 2] == '"') {
-            quote_count++;
-            if (quote_count == 2) { // Second occurrence
-                return i + 3; // Include the """ in the index
+            count++;
+            if (count == 2) { // Second occurrence
+                return i + 3; // Return the index just past the terminator
             }
-            i += 2; // Skip past this quote
+            i += 2; // Skip past this triple-quote
         }
     }
-    return len(block);
+    return len(block); // If not found, return the length of the block
 }
 
 span block_comment_part(span block) {
-    int file_index = file_for_block(block);
-    span language = state->files.a[file_index].language;
-    int index;
-
+    int index = file_for_block(block);
+    span language = state->files.a[index].language;
+    int end;
     if (span_eq(language, S("Python"))) {
-        index = find_block_comment_end_python(block);
-    } else { // Default to C
-        index = find_block_comment_end_c(block);
+        end = find_block_comment_end_python(block);
+    } else { // Default to C, includes C and JavaScript
+        end = find_block_comment_end_c(block);
+    }
+    
+    while (end < len(block) && isspace(block.buf[end])) {
+        end++; // Advance past whitespace
     }
 
-    // Include any newlines and whitespace after the terminator
-    while (index < len(block) && isspace(block.buf[index])) {
-        ++index;
-    }
-
-    return (span){block.buf, block.buf + index};
+    span result = {block.buf, block.buf + end};
+    return result;
 }
 /*
 In comment_to_prompt, we use the cmp space to construct a prompt around the given block comment.
@@ -2189,9 +2256,11 @@ First we should create our return span and assign .buf to the cmp.end location.
 
 Then we call prt2cmp.
 
-Next we prt the literal string "```c\n".
+Next we prt the a literal string (such as "```c\n").
 Then we use wrs to write the span passed in as our argument.
-Finally we write "```\n\n" and an instruction, which is usually "Write the code. Reply only with code. Do not include comments.".
+Finally we write "```\n\n" and an instruction.
+
+The above three elements are given in #langtable above as 6., block comment part to prompt pattern.
 
 Next we call prt2std to go back to the normal output mode.
 
@@ -2199,34 +2268,27 @@ Then we can get the new end of cmp and make that the end of our return span so t
 */
 
 span comment_to_prompt(span comment) {
-  // Prepare the return span to capture the start of new content in cmp
-  span return_span;
-  return_span.buf = cmp.end;
-
-  // Switch to writing in the cmp space
-  prt2cmp();
-
-  // Start writing the prompt
-  /* *** manual fixup *** */
-  int index = file_for_block(comment);
-  span lang = state->files.a[index].language;
-  if (span_eq(lang, S("Python"))) {
-    prt("```python\n");
+    span ret;
+    ret.buf = cmp.end;
+    prt2cmp();
+    if (state->current_language.buf[0] == 'C') {
+        prt("```c\n");
+    } else if (state->current_language.buf[0] == 'P') { // Python
+        prt("```python\n");
+    } else if (state->current_language.buf[0] == 'J') { // JavaScript
+        prt("```js\n");
+    }
     wrs(comment);
-    prt("```\n\nWrite the code. Reply only with code. Avoid using the code_interpreter.\n");
-  } else {
-    prt("```c\n"); // Begin code block
-    wrs(comment);  // Write the comment span
-    prt("```\n\nWrite the code. Reply only with code. Do not include comments.\n"); // End code block and add instruction
-  }
-
-  // Switch back to standard output space to avoid side-effects
-  prt2std();
-
-  // Capture the end of the new content written into cmp
-  return_span.end = cmp.end;
-
-  return return_span;
+    if (state->current_language.buf[0] == 'C') {
+        prt("```\n\nWrite the code. Reply only with code. Do not include comments.\n");
+    } else if (state->current_language.buf[0] == 'P') { // Python
+        prt("```\n\nWrite the code. Reply only with code. Avoid code_interpreter.\n");
+    } else if (state->current_language.buf[0] == 'J') { // JavaScript
+        prt("```\n\nWrite the code. Reply only with code. Do not include comments.\n");
+    }
+    prt2std();
+    ret.end = cmp.end;
+    return ret;
 }
 /*
 In send_to_clipboard, we are given a span and we must send it to the clipboard using a user-provided method, since this varies quite a bit between environments.
@@ -2301,12 +2363,15 @@ void compile() {
         sleep(1); // Give time for the user to read the message
     }
 }
-/*
+/* #replace_code_clipboard
+
 In replace_code_clipboard, we pipe in the result of running state->cbpaste.
 
-First we call ensure_conf_var with the message "Command to get text from the clipboard on your platform (Mac: pbpaste, Linux: try xclip -o -selection clipboard, Windows: ???)".
+First we call ensure_conf_var with the message "Command to get text from the clipboard on your platform (Mac: pbpaste, Linux: try xclip -o -selection clipboard, Windows: ?)"
 
 This will contain a command like "xclip -o -selection clipboard" (our default) or "pbpaste" on Mac, and comes from our conf file.
+
+Use s() and a char[2048] to prep the popen() call.
 
 We use the cmp buffer to store this data, starting from cmp.end (which is always somewhere before the end of the cmp space big buffer).
 
@@ -2319,32 +2384,20 @@ It is responsible for all further processing, notifications to the user, etc.
 
 Note: when this function returns, cmp.end is unchanged.
 This invalidates the span we created, but that's fine since it's about to go out of scope and we're done with it.
+
+Note 2: obviously we need the value of fread() to know the length of the incoming data
 */
 
-void replace_block_code_part(span new_code);
-
 void replace_code_clipboard() {
-    ensure_conf_var(&(state->cbpaste), S("Command to get text from the clipboard on your platform (Mac: pbpaste, Linux: try xclip -o -selection clipboard, Windows: \?\?\?)"), S(""));
-    char command[2048];
-    snprintf(command, sizeof(command), "%.*s", (int)(state->cbpaste.end - state->cbpaste.buf), state->cbpaste.buf);
-
-    FILE* pipe = popen(command, "r");
-    if (!pipe) {
-        perror("Failed to open clipboard paste command");
-        exit(EXIT_FAILURE);
-    }
-
-    span buffer = cmp_compl();
-    size_t bytes_read = fread(buffer.buf, 1, buffer.end - buffer.buf, pipe);
-    if (ferror(pipe)) {
-        perror("Failed to read clipboard content");
-        pclose(pipe);
-        exit(EXIT_FAILURE);
-    }
+    ensure_conf_var(&state->cbpaste, S("Command to get text from the clipboard on your platform (Mac: pbpaste, Linux: try xclip -o -selection clipboard, Windows: ?)"), S("xclip -o -selection clipboard"));
+    char cmd[2048];
+    s(cmd, 2048, state->cbpaste);
+    FILE *pipe = popen(cmd, "r");
+    if (!pipe) return;
+    size_t nbytes = fread(cmp.end, 1, cmp_space + BUF_SZ - cmp.end, pipe);
+    span new_content = {cmp.end, cmp.end + nbytes};
+    replace_block_code_part(new_content);
     pclose(pipe);
-
-    span new_code = {buffer.buf, buffer.buf + bytes_read};
-    replace_block_code_part(new_code);
 }
 /* #replace_block_code_part(span)
 
@@ -2362,11 +2415,13 @@ The end result of inp should contain:
 - the comment part of the current block, which we can get from block_comment_part on the current block.
 - up to two newlines unless the block comment part already ends with them
 - the code part coming from the clipboard in our second argument
+- one newline after the code part and before the next block
 - current contents of inp from the .end of the original block to the inp.end of original input.
 
-So, first we check whether we are adding one, zero, or two newlines, being careful about SEGV.
+We check whether we are adding zero, one, or two newlines between the comment part and the new code part.
+If the comment part is empty or is less than len 2, we don't do the check and don't add any newlines.
 We get the index of the projfile from file_for_block.
-Then we check the length of what the new block will be (comment part + opt. newlines + new part).
+Then we check the length of what the new block will be (comment part + opt. newlines + new part + newline).
 We then compare this to the old block length and do a memmove if necessary on the "rest" of inp, so that we have a gap to accommodate the new block's len.
 Then we simply copy any newlines and the new code into inp.
 (We do not need to copy the comment part, as it is already there in the original block.)
@@ -2379,46 +2434,30 @@ Once all this is done, we call new_rev, passing NULL for the filename argument, 
 */
 
 void replace_block_code_part(span new_code) {
-    int file_index = file_for_block(state->blocks.s[state->current_index]);
     span original_block = state->blocks.s[state->current_index];
+    int file_index = file_for_block(original_block);
     span comment_part = block_comment_part(original_block);
-
-    int newlines_needed = 2;
-    if (len(comment_part) > 0 && comment_part.end[-1] == '\n') {
-        newlines_needed = 1;
-        if (comment_part.end - comment_part.buf > 1 && comment_part.end[-2] == '\n') {
-            newlines_needed = 0;
-        }
+    int newlines_to_add = 2 - (len(comment_part) >= 2 && comment_part.buf[len(comment_part) - 2] == '\n' ? 1 : 0) - (len(comment_part) && comment_part.buf[len(comment_part) - 1] == '\n' ? 1 : 0);
+    newlines_to_add = newlines_to_add < 0 ? 0 : newlines_to_add;
+    int new_block_len = len(comment_part) + newlines_to_add + len(new_code) + 1; // +1 for the newline after the code part
+    int old_block_len = len(original_block);
+    int diff = new_block_len - old_block_len;
+    if (diff != 0) {
+        memmove(original_block.buf + old_block_len + diff, original_block.buf + old_block_len, len(inp) - (original_block.buf - inp.buf) - old_block_len);
     }
-
-    size_t new_block_length = len(comment_part) + newlines_needed + len(new_code);
-    ssize_t size_diff = new_block_length - (original_block.end - original_block.buf);
-
-    if (size_diff != 0) {
-        memmove(original_block.end + size_diff, original_block.end, inp.end - original_block.end);
+    char *cursor = original_block.buf + len(comment_part);
+    for (int i = 0; i < newlines_to_add; ++i) {
+        *cursor++ = '\n';
     }
-
-    unsigned char* current_pos = original_block.buf + len(comment_part);
-    for (int i = 0; i < newlines_needed; ++i) {
-        *current_pos++ = '\n';
-    }
-
-    memcpy(current_pos, new_code.buf, len(new_code));
-
-    // Update inp.end to reflect the new size
-    inp.end += size_diff;
-
-    // Update the contents span of the current and subsequent files
-    state->files.a[file_index].contents.end += size_diff;
+    memcpy(cursor, new_code.buf, len(new_code));
+    cursor += len(new_code);
+    *cursor++ = '\n';
+    inp.end += diff;
     for (int i = file_index + 1; i < state->files.n; ++i) {
-        state->files.a[i].contents.buf += size_diff;
-        state->files.a[i].contents.end += size_diff;
+        state->files.a[i].contents.buf += diff;
+        state->files.a[i].contents.end += diff;
     }
-
-    // Re-find all the blocks since inp has changed
     find_all_blocks();
-
-    // Store a new revision, no filename required
     new_rev(NULL, file_index);
 }
 /* cmpr_init
@@ -2430,6 +2469,8 @@ In sh terms:
 - touch .cmpr/conf
 
 Note that if the CWD is already initialized this is a no-op i.e. the init is idempotent (up to file access times and similar).
+
+TODO: can set revs and tmp already in conf, if not already set.
 */
 
 void cmpr_init() {
