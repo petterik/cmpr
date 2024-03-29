@@ -2281,7 +2281,7 @@ In this case we prt "Build succeeded" on a line.
 */
 
 void compile() {
-    ensure_conf_var(&state->buildcmd, S("The build command will be run every time you hit 'b' and should build the code you are editing (typically in projfile)"), nullspan());
+    ensure_conf_var(&state->buildcmd, S("The build command will be run every time you hit 'B' and should build the code you are editing (typically in projfile)"), nullspan());
     
     char buf[2048] = {0};
     s(buf, sizeof(buf), state->buildcmd);
