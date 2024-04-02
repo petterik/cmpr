@@ -71,14 +71,15 @@
     ✗ n goes to the next, which may or may not be in the same block
     ✗ enter sets the current index but can also set a pagination mode
     ✗ e might also do a +N or equivalent
-    push v5
+  ✓ when switching blocks we should reset pagination (per-block(?))
+  ✓ R should ensure that there is a newline at the end
+  ✓ fix ruler position bug
+  ✓ push v5
     "total rev awareness"
       is a set of features starting from an index or rolling hash
       subsumes diff features, data loss prevention on save, block -> rev indexing
       conflicts with catalog file idea (?)
-    when switching blocks we should reset pagination (per-block(?))
     data loss when two cmprs open (related to rev currency check)
-  ✓ R should ensure that there is a newline at the end
     add u for "R"
     ✓ sort the revdir and print everything
       add a catalog file in revs/catalog
