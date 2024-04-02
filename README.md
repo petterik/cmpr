@@ -79,7 +79,7 @@ The first time you use the 'r' or 'R' commands you will be prompted for the comm
 For Mac you would use "pbcopy" and "pbpaste", on Linux we are using "xclip".
 
 The tool is still new and light on features.
-We only support C and Python; mostly this is around syntax of where blocks start (in C we use block comments, and triple-quoted strings in Python).
+We support C, Python, and JavaScript; mostly this is around syntax of where blocks start (in C we use block comments, and triple-quoted strings in Python).
 It's not hard to extend the support to other languages, just ask for what you want in the discord and it may happen soon!
 It's not hard to contribute, you don't need to know C well, but you do need to be able to read it (you can't trust the code from GPT without close examination).
 
