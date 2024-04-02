@@ -1,4 +1,4 @@
-/* 
+/*
 Below we have shell functions which we used for building in the first days of the project.
 These can gradually be cleaned up as we implement the functionality directly or in other ways.
 We export these functions into a separate file so that they can be sourced at the shell.
@@ -88,6 +88,8 @@ Reply only with code. Do not simplify, but include working code. If necessary, y
 /* import our library code */
 
 #include "spanio.c"
+
+#define flush_exit(n) flush(); exit(n)
 /* #langtable #NaturalLanguageTabularProgramming #replywithok
 Here we have a table of languages that we support.
 
@@ -127,7 +129,8 @@ C: "```c\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Do not inclu
 Python: "```python\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Avoid code_interpreter.\n"
 JavaScript: "```js\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Do not include comments.\n"
 */
-/*
+/* #config_fields
+
 We define CONFIG_FIELDS including all our known config settings, as they are used in several places (with X macros).
 
 The known config settings are:
@@ -136,6 +139,7 @@ The known config settings are:
 - revdir, a span containing a relative or absolute path to where we store our revisions
 - tmpdir, another path for temp files that we use for editing blocks
 - buildcmd, the command to do a build (e.g. by the "b" key)
+- bootstrap, a command that creates an initial prompt (see README)
 - cbcopy, the command to pipe data to the clipboard on the user's platform
 - cbpaste, the same but for getting data from the clipboard
 */
@@ -145,10 +149,11 @@ X(projdir) \
 X(revdir) \
 X(tmpdir) \
 X(buildcmd) \
+X(bootstrap) \
 X(cbcopy) \
 X(cbpaste)
+/* #projfiles
 
-/*
 A project can contain multiple files.
 
 We have a projfile type which contains for each file:
@@ -167,7 +172,8 @@ typedef struct {
 } projfile;
 
 MAKE_ARENA(projfile, projfiles, 256)
-/*
+/* #ui_state
+
 We define a struct, ui_state, which we can use to store any information about the UI that we can then pass around to various functions as a single entity.
 This includes, so far:
 - files, a projfiles array of files in the project
@@ -176,11 +182,15 @@ This includes, so far:
 - the current_index into them
 - a marked_index, which represent the "other end" of a selected range
 - the search span which will contain "/" followed by some search if in search mode, otherwise will be empty()
+- the previous search span, used for n/N
+- the ex_command which similarly contains ":" if in ex command entry mode, otherwise empty()
 - the config file path as a span
 - terminal_rows and _cols which stores the terminal dimensions
 - scrolled_lines, the number of physical lines that have been scrolled off the screen upwards
 
 Additionally, we include a span for each of the config files, with an X macro inside the struct, using CONFIG_FIELDS defined above.
+
+Below the ui_state struct/typedef, we declare a global ui_state* state, which will be initialized below in main().
 */
 
 typedef struct ui_state {
@@ -190,6 +200,8 @@ typedef struct ui_state {
     int current_index;
     int marked_index;
     span search;
+    span previous_search;
+    span ex_command;
     span config_file_path;
     int terminal_rows;
     int terminal_cols;
@@ -198,7 +210,78 @@ typedef struct ui_state {
     CONFIG_FIELDS
     #undef X
 } ui_state;
-/*
+
+ui_state* state;
+/* #all_functions #replywithok
+*/
+
+void print_config();
+void parse_config();
+void cmpr_init();
+void main_loop();
+void handle_keystroke(char);
+void keyboard_help();
+void reset_stdin_to_terminal();
+void edit_current_block();
+void rewrite_current_block_with_llm();
+void compile();
+void replace_code_clipboard();
+void toggle_visual();
+
+void start_search();
+void perform_search();
+void finalize_search();
+
+void search_forward();
+void search_backward();
+
+void start_ex();
+void handle_ex_command();
+
+void bootstrap();
+void addfile(span);
+void addlib(span);
+void ex_help();
+
+void settings_mode();
+void ensure_conf_var(span*, span, span);
+span block_comment_part(span block);
+void print_block(int);
+void print_comment(int);
+void print_code(int);
+int find_block(span);
+int count_blocks();
+span comment_to_prompt(span comment);
+void send_to_clipboard(span prompt);
+void print_physical_lines(span, int);
+int print_matching_physical_lines(span, span);
+void page_down();
+void page_up();
+span count_physical_lines(span, int*);
+void print_multiple_partial_blocks(int,int);
+void print_single_block_with_skipping(int,int);
+int add_projfile(span); // helper for check_conf_vars
+char* tmp_filename();
+int launch_editor(char* filename);
+void handle_edited_file(char* filename);
+spans find_blocks(span);
+spans find_blocks_by_type(span file, span language);
+int file_for_block(span block);
+void replace_block_code_part(span new_code);
+void new_rev(char*, int);
+void handle_args(int argc, char **argv);
+void get_code();
+void get_revs();
+void check_conf_vars();
+void rev_decr();
+
+span pipe_cmd_cmp(span); // should probably be a library method
+
+// stubs
+
+void rev_decr() {}
+/* #main
+
 In main,
 
 First we call init_spans, since all our i/o relies on it.
@@ -208,7 +291,7 @@ We call projfiles_arena_alloc near the top and and _free before we exit, with ro
 We call span_arena_alloc(), and at the end we call span_arena_free() just for clarity even though it doesn't matter anyway since we're exiting the process.
 We allocate a spans arena of 1 << 20 or a binary million spans.
 
-Just above main, we declare a global ui_state* called state, which will allow us to not pass around the ui_state singleton all over our program.
+Above (in the ui state block), we have declared a global ui_state* called state, which allows us to not pass around the ui_state singleton all over our program.
 After declaring our ui_state variable in main, which we initialize to {0}, we will set this global pointer to it.
 We set config_file_path on the state to the default configuration file path which is ".cmpr/conf", i.e. always relative to the CWD.
 We projfiles_alloc room for 1024 files on the state, and set the ".n" to zero, so we can use the _push() pattern.
@@ -221,17 +304,12 @@ Next we call a function get_code().
 This function either handles reading standard input or if we are in "project directory" mode then it reads the files indicated by our config file.
 In either case, once this returns, inp is populated and any other initial code indexing work is done.
 
+Next we call get_revs(), which handles reading and indexing all of our revisions (in revdir).
+
 Then we call main_loop().
 
 The main loop reads input in a loop and probably won't return, but just in case, we always call flush() before we return so that our buffered output from prt and friends will be flushed to stdout.
 */
-
-void handle_args(int argc, char **argv);
-void get_code();
-void check_conf_vars();
-void main_loop();
-
-ui_state* state;
 
 int main(int argc, char** argv) {
     init_spans();
@@ -254,112 +332,194 @@ int main(int argc, char** argv) {
     span_arena_free();
     return 0;
 }
-/* #all_functions #replywithok
-*/
 
-void edit_current_block();
-void rewrite_current_block_with_llm();
-void compile();
-void replace_code_clipboard();
-void toggle_visual();
-void start_search();
-void settings_mode();
-span block_comment_part(span block);
-span comment_to_prompt(span comment);
-void send_to_clipboard(span prompt);
-void print_physical_lines(span, int);
-int print_matching_physical_lines(span, span);
-void page_down();
-void page_up();
-span count_physical_lines(span, int*);
-void print_multiple_partial_blocks(int,int);
-void print_single_block_with_skipping(int,int);
-int add_projfile(span); // helper for check_conf_vars
 /*
 Debugging helper
 */
 
 void print_config() {
-    prt("Current Configuration Settings:\n");
-
-    #define X(name) prt(#name ": %.*s\n", len(state->name), state->name.buf);
-    CONFIG_FIELDS
-    #undef X
-    flush();
+  prt("config:\n");
 }
 
-/*
-We have exit_success and exit_with_error for convenience.
+/* #handle_args #argtable
 
-Because it is such a common pattern, we include a exit_success() function of no arguments, which calls flush and then exit(0).
-*/
-
-void exit_success() {
-    flush();
-    exit(0);
-}
-
-void print_config();
-void parse_config();
-void exit_with_error(char*);
-void cmpr_init();
-spans find_blocks(span);
-void reset_stdin_to_terminal();
-/*
 In handle_args we handle any command-line arguments.
+
+We present the supported arguments and flags in a tabular form (as with langtable previously).
+
+Command syntax summary:
+
+cmpr [--conf <filepath>] [--print-conf|--help|--init|--version] [(--print-block|--print-code|--print-comment) <index>] [find-block <search>] [--count-blocks]
+
+Command argument and flag table:
+
+1. Supported arguments and flags:
+
+--conf <filepath>
+--print-conf
+--help
+--init
+--version
+--print-block <index>
+--print-code <index>
+--print-comment <index>
+--find-block <search>
+--count-blocks
+
+2. Behavior of arguments and flags:
+
+conf:
+  Use an alternate configuration file given by <filepath>.
+
+print-conf:
+  Print configuration settings and exit.
+
+help:
+  Print usage summary, help on command-line flags and exit.
+
+init:
+  Initialize .cmpr/ in the current directory.
+
+version:
+  Print the version number and build timestamp and exit.
+
+3. Implementation notes:
+
+conf:
+  update config_file_path on the state; we must do this before calling parse_config
+
+print-conf:
+  we print the configuration (print_config()) and exit; we must have called parse_config (and set an alt conf file if any) prior
+
+help:
+  we just prt a short usage summary, flush(), and exit(0)
+  we define a macro flush_exit(n) to reduce typing
+  we include argv[0] as usual and summarize everything we support.
+
+init:
+  we just call cmpr_init; we also need to do this after --conf was handled if any
+
+version:
+  we prt "Version: $VERSION$" here; the dollar-delimited variable-looking thing is replaced by a build step
+
+print-{code,comment,block}, count-blocks, find-block:
+  all of these require the code be loaded, which normally happens after we are called
+  so if any of these flags are used we call get_code() first, then we call the appropriate function, then flush and exit successfully
+
+4. Help strings:
+
+conf:
+  Use alternate configuration file <filepath>.
+
+print-conf:
+  Print the current configuration settings.
+
+init:
+  Initialize a new directory for use with cmpr.
+
+help:
+  Display this help message.
+
+version:
+  Display the version number / build string.
+
+print-block, -comment, -code:
+  Print a complete block (or comment or code part) given by index.
+
+find-block:
+  Print index of first block matching search string by full-text search, or -1.
+
+count-blocks:
+  Print number of blocks in project.
+
+--- end argtable
+
+Below we implement void handle_args(int argc, char **argv);
+
+Here are some random further implementation notes on that:
+
+There are things that have to be handled in specific orderings.
+Our basic technique here is to set indicators (0- or 1-valued ints) in our arg-handling loop.
+Below the loop we then handle the necessaries in the correct order.
+We use "int ind_*" for these variables so they don't conflict with functions or anything else we already have.
+
+None of these flags can be combined: print-block, print-comment, print-code, find-block, count-blocks.
+If more than one is set, we print an error message and exit.
 
 If "--conf <alternate-config-file>" is passed, we update config_file_path on the state.
 Once we know the conf file to read from, we call parse_config before we do anything else.
 
 If "--print-conf" is passed in, we print our configuration settings and exit.
-This is only OK to write because we have already called parse_config, so the configuration settings have already been read in from the file.
-In other words, this function will always call parse_config, always before printing the config if "--print-conf" is used, and always after updating the config file if "--conf" is used.
-We do this by setting an indicator print_conf while parsing the flags, and then printing the conf at the end; this handles both the case where both flags are used together and the case where just --print-conf is used with the default conf file.
+This is only OK to do once we have already called parse_config, so the configuration settings have already been read in from the file.
 
-With the "--help" flag we just prt a short usage summary and exit_success().
-We include argv[0] as usual and indicate that typical usage is by providing a project directory as the argument, and summarize all the flags that we support.
-
-With "--init" we call a function, cmpr_init(), which performs some initialization of a new directory to be used with the tool.
-
-With "--version" we print the version number.
-(The version is always a natural number, and goes up when a release significantly increases usability.
-Here we use "Version: $VERSION$" and the dollar-delimited variable-looking thing is replaced by a build step.)
-
-void handle_args(int argc, char **argv);
+This function will always call parse_config, always before printing the config if "--print-conf" is used, and always after updating the config file if "--conf" is used.
+In particular, even if no alternate conf file was set, we still need to read the default conf file.
 */
 
 void handle_args(int argc, char **argv) {
-    int print_conf = 0;
+    int ind_conf = 0, ind_print_conf = 0, ind_help = 0, ind_init = 0, ind_version = 0;
+    int ind_print_block = -1, ind_print_code = -1, ind_print_comment = -1;
+    int ind_find_block = 0, ind_count_blocks = 0;
+    span find_block_search = nullspan();
 
     for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "--conf") == 0 && i + 1 < argc) {
+        if (!strcmp(argv[i], "--conf") && i + 1 < argc) {
             state->config_file_path = S(argv[++i]);
-        } else if (strcmp(argv[i], "--print-conf") == 0) {
-            print_conf = 1;
-        } else if (strcmp(argv[i], "--help") == 0) {
-            prt("Usage: %s [--conf <config-file>] [--print-conf] [--init] [--help] [--version]\n", argv[0]);
-            prt("       --conf <config-file>   Use an alternate configuration file.\n");
-            prt("       --print-conf           Print the current configuration settings.\n");
-            prt("       --init                 Initialize a new directory for use with the tool.\n");
-            prt("       --help                 Display this help message and exit.\n");
-            prt("       --version              Print the version number and exit.\n");
-            exit_success();
-        } else if (strcmp(argv[i], "--init") == 0) {
-            cmpr_init();
-            exit_success();
-        } else if (strcmp(argv[i], "--version") == 0) {
-            prt("Version: $VERSION$\n");
-            exit_success();
+            ind_conf = 1;
+        } else if (!strcmp(argv[i], "--print-conf")) {
+            ind_print_conf = 1;
+        } else if (!strcmp(argv[i], "--help")) {
+            ind_help = 1;
+        } else if (!strcmp(argv[i], "--init")) {
+            ind_init = 1;
+        } else if (!strcmp(argv[i], "--version")) {
+            ind_version = 1;
+        } else if (!strcmp(argv[i], "--print-block") && i + 1 < argc) {
+            ind_print_block = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--print-code") && i + 1 < argc) {
+            ind_print_code = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--print-comment") && i + 1 < argc) {
+            ind_print_comment = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--find-block") && i + 1 < argc) {
+            find_block_search = S(argv[++i]);
+            ind_find_block = 1;
+        } else if (!strcmp(argv[i], "--count-blocks")) {
+            ind_count_blocks = 1;
         }
     }
 
-    parse_config();
+    parse_config(); /* *** manual fixup *** */
 
-    if (print_conf) {
-        print_config();
-        exit_success();
+    if (ind_init) cmpr_init();
+    if (ind_version) { prt("Version: $VERSION$"); flush(); exit(0); }
+    if (ind_help) {
+        prt("Usage: %s [--conf <filepath>] [--print-conf|--help|--init|--version] [(--print-block|--print-code|--print-comment) <index>] [find-block <search>] [--count-blocks]", argv[0]);
+        flush();
+        exit(0);
+    }
+
+    if (ind_print_conf || ind_print_block >= 0 || ind_print_code >= 0 || ind_print_comment >= 0 || ind_find_block || ind_count_blocks) get_code();
+
+    if (ind_print_conf) print_config();
+    if (ind_print_block >= 0) print_block(ind_print_block);
+    if (ind_print_code >= 0) print_code(ind_print_code);
+    if (ind_print_comment >= 0) print_comment(ind_print_comment);
+    if (ind_find_block) {
+        int index = find_block(find_block_search);
+        prt("%d\n", index);
+    }
+    if (ind_count_blocks) {
+        int count = count_blocks();
+        prt("%d\n", count);
+    }
+
+    /* *** manual fixup *** */
+    if (ind_print_conf || ind_print_block > -1 || ind_print_code > -1 || ind_print_comment > -1 || ind_find_block || ind_count_blocks) {
+      flush();
+      exit(0);
     }
 }
+
 /*
 In clear_display() we clear the terminal by printing some escape codes (with prt and flush as usual).
 */
@@ -459,7 +619,8 @@ void find_all_blocks() {
     state->blocks = all_blocks;
     free(file_blocks);
 }
-/*
+/* #get_code
+
 In get_code, we get the code into the input buffer.
 
 For each of the projfiles:
@@ -478,6 +639,11 @@ void get_code() {
 
     find_all_blocks();
 }
+
+/* #get_revs
+*/
+
+void get_revs() {}
 /*
 In find_blocks_by_type_python, we get a span containing a file.
 
@@ -514,7 +680,6 @@ If either of these conditions fails, the sanity test fails.
 For every other block, .buf is equal to the .end of the previous.
 If this sanity check fails, we complain and crash as usual (prt, flush, exit).
 */
-
 
 spans find_blocks_by_type_python(span file) {
     int block_count = 0;
@@ -577,6 +742,7 @@ spans find_blocks_by_type_python(span file) {
 
     return blocks;
 }
+
 /*
 In find_blocks_by_type_c, we get a span containing a file.
 
@@ -695,9 +861,6 @@ char getch(void) {
 
   return buf;
 }
-
-
-
 
 /*
 In reset_stdin_to_terminal, we use the technique of opening /dev/tty for direct keyboard input with dup2 to essentially "reset" stdin to the terminal, even if it was originally redirected from a file.
@@ -897,6 +1060,7 @@ void toggle_visual() {
     // Reflect the new state in the display
     print_current_blocks();
 }
+
 /*
 In print_current_blocks, we print either the current block, if we are in normal mode, or the set of selected blocks if we are in visual mode.
 
@@ -1020,6 +1184,7 @@ We then skip more physical lines until we know whether we can overfill block_row
 If the number of physical lines printed equals the block_row_limit, and the block_row_limit was positive, we can say the offset is "perfect".
 
 */
+
 /* #handle_keystroke
 
 In handle_keystroke, we support the following single-char inputs:
@@ -1029,10 +1194,13 @@ In handle_keystroke, we support the following single-char inputs:
 - e, Edit the current block in $EDITOR (or vi by default)
 - r, Request an LLM rewrite the code part of the block based on the comment part; silently updates clipboard
 - R, kin to "r", which reads current clipboard contents back into the block, replacing the code part
+- u, undo
 - space/b, paginate down or ("back") up within a block
 - B, do a build by running the build command you provide
 - v, sets the marked point to the current index, switching to "visual" selection mode, or leaves visual mode if in it
 - /, switches to search mode
+- :, switches to ex command line
+- n/N, repeat search in forward/backward direction
 - S, (likely to change) goes into settings mode
 - ?, display brief help about the keyboard shortcuts available
 - q, exits (with prt("goodbye\n"); flush(); exit(0))
@@ -1046,33 +1214,27 @@ We can call clear_display first, and flush, getch after, so the user has time to
 
 We call terpri() on the first line of this function (just to separate output from any handler function from the ruler line).
 
-Implemented inline: j,k,g,G,?,q
-All others call helper functions already declared above (B -> compile()).
+Implemented inline: j,k,g,G,q
+All others call helper functions already declared, e.g.
+B -> compile(),
+u -> rev_decr(),
+R -> replace_code_clipboard().
 */
 
 void handle_keystroke(char input) {
     terpri();
-
     switch (input) {
         case 'j':
-            if (state->current_index < state->blocks.n - 1) {
-                state->current_index++;
-                state->scrolled_lines = 0;
-            }
+            if (state->current_index < count_blocks() - 1) state->current_index++;
             break;
         case 'k':
-            if (state->current_index > 0) {
-                state->current_index--;
-                state->scrolled_lines = 0;
-            }
+            if (state->current_index > 0) state->current_index--;
             break;
         case 'g':
             state->current_index = 0;
-            state->scrolled_lines = 0;
             break;
         case 'G':
-            state->current_index = state->blocks.n - 1;
-            state->scrolled_lines = 0;
+            state->current_index = count_blocks() - 1;
             break;
         case 'e':
             edit_current_block();
@@ -1082,6 +1244,9 @@ void handle_keystroke(char input) {
             break;
         case 'R':
             replace_code_clipboard();
+            break;
+        case 'u':
+            rev_decr();
             break;
         case ' ':
             page_down();
@@ -1098,25 +1263,37 @@ void handle_keystroke(char input) {
         case '/':
             start_search();
             break;
+        case ':':
+            start_ex();
+            break;
+        case 'n':
+            search_forward();
+            break;
+        case 'N':
+            search_backward();
+            break;
         case 'S':
             settings_mode();
             break;
         case '?':
             clear_display();
-            prt("j/k: Move up/down one block.\n");
-            prt("g/G: Go to the first/last block.\n");
-            prt("e: Edit current block in $EDITOR (default: vi).\n");
-            prt("r: Rewrite code part based on comment, puts prompt on clipboard.\n");
-            prt("R: Read clipboard contents back into block, replacing code part.\n");
-            prt("space/b: Paginate down/back up within a block.\n");
-            prt("B: Execute build command.\n");
-            prt("v: Mark current index, toggle visual selection mode.\n");
-            prt("/: Enter search mode.\n");
-            prt("S: Enter settings mode.\n");
-            prt("?: Display this help.\n");
-            prt("q: Exit (goodbye).\n");
+            prt("j/k - Go up/down one block. No-op at boundaries.\n");
+            prt("g/G - Go to first/last block.\n");
+            prt("e - Edit current block in $EDITOR (default vi).\n");
+            prt("r - LLM rewrites code part based on comment, updates clipboard.\n");
+            prt("R - Replace code part with current clipboard contents.\n");
+            prt("u - Undo last action.\n");
+            prt("space/b - Paginate down/back up within a block.\n");
+            prt("B - Execute build command.\n");
+            prt("v - Toggle visual selection mode.\n");
+            prt("/ - Enter search mode.\n");
+            prt(": - Enter ex command line.\n");
+            prt("n/N - Repeat search in forward/backward direction.\n");
+            prt("S - Enter settings mode.\n");
+            prt("? - Display this help.\n");
+            prt("q - Exit (prints \"goodbye\\n\").\n");
+            prt("Press any key to continue...\n");
             flush();
-            prt("Press any key to return...\n");
             getch();
             break;
         case 'q':
@@ -1124,12 +1301,11 @@ void handle_keystroke(char input) {
             flush();
             exit(0);
             break;
-        default:
-            // Unhandled key
-            break;
     }
 }
-/*
+
+/* #start_search
+
 To support search mode, we have a static buffer of length 256 which can be used to search and which the user types into when in search mode.
 
 In start_search(), to indicate that we are in search mode, we set the search on the ui state to be equal to a span which points at this static buffer.
@@ -1156,9 +1332,6 @@ OF COURSE, we use getch() which we carefully defined above, NEVER getchar().
 
 We write declarations for the helper functions (which we define below).
 */
-
-void perform_search();
-void finalize_search();
 
 void start_search() {
     static char search_buffer[256] = {"/"}; // Static buffer for search, pre-initialized with "/"
@@ -1188,8 +1361,139 @@ void start_search() {
     finalize_search(); // Finalize search on Enter
 }
 
-/*
-In perform_search(), we get the state after the search string has been updated.
+/* #start_ex
+
+To support ex commands, we have a static buffer (declared in start_ex() below) of length 256 which is used to hold the ex command while the user is typing it.
+The first byte of this buffer is always ":".
+
+In start_ex, to indicate that we are going into ex mode, we set ex_command on the state to a span that points at this static buffer, and includes only the ":", since this is what was just typed to get into ex command mode.
+We can do this using S(), but we prefer to just directly construct the span.
+Then we print the line at the bottom starting with ":" (which is currently the only thing on it) as described below, to indicate to the user that we're now in ex command entry mode.
+
+However, if we've deleted the initial colon, that means the user doesn't want to be in ex command mode any more.
+If the state element is empty it always means we are not in the mode.
+If this happens we call print_current_blocks() to refresh the display, and then return.
+
+As with search mode, we implement our own input handling with a getch() loop, handling both kinds of backspace, and if enter is hit, we will call handle_ex_command().
+On any backspace character we will simply shorten the span (.end--) and on any other input at all we will extend it.
+In particular, we want to transparently support UTF-8 input, so if the byte is not a backspace byte we simply append it without any further testing.
+
+In our loop, unlike with search mode, we are not continuously changing what's displayed on the main area of the screen while the user is typing, so we can print an ANSI escape code to move to and clear the last row of the screen and then write our ex_command buffer on this last terminal row (including the ":").
+(Obviously, we use prt() just like everywhere else in this codebase, not randomly printf for no reason.)
+*/
+
+void start_ex() {
+    static char ex_buf[256] = ":";
+    state->ex_command = (span){(u8*)ex_buf, (u8*)ex_buf + 1};
+
+    prt("\033[%d;1H\033[K", state->terminal_rows);
+    prt("%.*s", len(state->ex_command), state->ex_command.buf);
+    flush();
+
+    char ch;
+    while ((ch = getch()) != '\n') {
+        if (ch == '\b' || ch == 127) { // Handle backspace
+            if (state->ex_command.end > state->ex_command.buf + 1) {
+                state->ex_command.end--;
+            } else { // Exit ex mode if only ":" is left
+                state->ex_command = nullspan();
+                print_current_blocks();
+                return;
+            }
+        } else { // Append non-backspace input, including UTF-8
+            if (state->ex_command.end < state->ex_command.buf + sizeof(ex_buf)) {
+                *(state->ex_command.end++) = ch;
+            }
+        }
+        // Move to and clear the last row of the screen
+        prt("\033[%d;1H\033[K", state->terminal_rows);
+        // Write ex_command buffer on this last terminal row
+        prt("%.*s", len(state->ex_command), state->ex_command.buf);
+        flush();
+    }
+    handle_ex_command();
+}
+
+/* #extable #handle_ex_command
+
+Once the ex_command on the state is set up, this function actually handles it, and clears ex_command to leave ex command entry mode.
+We put all the commands in spans first, so we can conveniently use starts_with for dispatching and len() with skip_n().
+Note that we don't implement ex_help here, as it is already implemented; on :help we just call it.
+
+The ex commands are defined as a table:
+
+1. Supported ex commands:
+
+:bootstrap, :addfile, :addlib, :help
+
+2. Implementation functions:
+
+bootstrap(), addfile(span), addlib(span), ex_help()
+
+3. Arguments if any:
+
+:addfile, :addlib:
+  file path to add.
+
+4. Help text:
+
+bootstrap:
+  Run the user-provided bootstrap command.
+
+addfile, addlib:
+  Add a file or library to the project (adds file: or lib: line to conf).
+
+help:
+  Print short help on available ex commands.
+*/
+
+// stubbed for now (manually)
+void addfile(span s) {}
+void addlib(span s) {}
+void ex_help() {}
+
+void handle_ex_command() {
+    span ex_cmd = state->ex_command;
+    if (starts_with(ex_cmd, S(":bootstrap"))) {
+        bootstrap();
+    } else if (starts_with(ex_cmd, S(":addfile"))) {
+        addfile(skip_n(ex_cmd, 8));
+    } else if (starts_with(ex_cmd, S(":addlib"))) {
+        addlib(skip_n(ex_cmd, 7));
+    } else if (starts_with(ex_cmd, S(":help"))) {
+        ex_help();
+    }
+    state->ex_command = nullspan();
+}
+
+/* #bootstrap
+
+Here we make sure that the conf variable bootstrap is set, and then run it.
+
+The message is "The bootstrap command you provide should generate your initial prompt on stdout. It will be sent to the clipboard for you. See README for details.".
+
+This is similar to #compile above.
+
+However, instead of just running it and letting the output go to the terminal, we capture the output in a span using pipe_cmd_cmp(), which returns a span with the piped data.
+
+Then we send this span to the clipboard with send_to_clipboard().
+*/
+
+void bootstrap() {
+    ensure_conf_var(&state->bootstrap, S("The bootstrap command generates your initial prompt on stdout. See README for details."), nullspan());
+    
+    char buf[2048] = {0};
+    s(buf, sizeof(buf), state->bootstrap);
+    prt("Running bootstrap command: %s\n", buf);
+    flush();
+
+    span output = pipe_cmd_cmp(S(buf));
+    send_to_clipboard(output);
+}
+
+/* #perform_search
+
+In perform_search(), we update the display after the search string has been updated.
 
 The search string (span state.search) will always start with a slash.
 We remove this (there is no library method for this so just directly construct the span) and take the rest of it as the actual string to search for.
@@ -1310,6 +1614,7 @@ span next_line_limit(span* s, int n) {
     s->buf = result.end; // Advance the start of the input span past the returned prefix
     return result;
 }
+
 /*
 In print_ruler we use prt to show
 
@@ -1465,28 +1770,75 @@ int print_matching_physical_lines(span block, span match) {
 
     return physical_lines_printed;
 }
-/*
+/* #finalize_search
+
 In finalize_search(), we update the current_index to point to the first result of the search given in the search string.
 We ignore the first character of state.search which is always slash, and find the first block which contains the rest of the search string (using contains()).
 Then we set current_index to that block, also resetting scrolled_lines.
-We then reset state.search to an empty span to indicate that we are not in search mode any more.
-Finally we call print_current_blocks to refresh the display given the block that is now the current one (replacing the search screen).
+We then reset state.search to an empty span to indicate that we are not in search mode any more, but we put the search on state.previous_search so that 'n' and 'N' can work.
 */
 
-
 void finalize_search() {
-    span search_span = {state->search.buf + 1, state->search.end}; // Ignore the leading slash
-
-    for (int i = 0; i < state->blocks.n; i++) {
-        if (contains(state->blocks.s[i], search_span)) {
-            state->current_index = i; // Update current_index to the first match
-            state->scrolled_lines = 0;
-            break; // Exit the loop once the first match is found
+    span search_term = skip_n(state->search, 1); // Skip the slash
+    int found = -1;
+    for (int i = 0; i < state->blocks.n && found == -1; i++) {
+        if (contains(state->blocks.s[i], search_term)) {
+            found = i;
         }
     }
+    if (found != -1) {
+        state->current_index = found;
+        state->scrolled_lines = 0;
+        state->previous_search = state->search;
+        state->search = nullspan();
+    }
+}
 
-    state->search = nullspan(); // Reset search to indicate exit from search mode
-    //print_current_blocks(); // Refresh the display
+/* #search_forward, #search_backward
+
+In these two functions (used by n/N) we first get the sequence of blocks which match state.previous_search.
+If this is empty, we do nothing.
+
+As this includes the leading slash, we first strip that (using skip_n), then use contains() to find the blocks which match.
+
+We then find either the lowest block greater than current_index which contains a match, for a forward search, or the highest matching block lower than current_index for a backward search.
+In either case we set current_index to this other matching block.
+
+If there is no other matching block, we do nothing.
+
+If there are other matching blocks, but none which is higher/lower, then instead of wrapping around, we do nothing.
+
+Later we can add match information (count and current) to the ruler, but we don't handle that yet.
+*/
+
+void search_forward() {
+    if(empty(state->previous_search)) return;
+    span search_term = skip_n(state->previous_search, 1);
+    int match_index = -1;
+    for (int i = 0; i < state->blocks.n; ++i) {
+        if (i > state->current_index && contains(state->blocks.s[i], search_term)) {
+            match_index = i;
+            break;
+        }
+    }
+    if (match_index != -1) {
+        state->current_index = match_index;
+    }
+}
+
+void search_backward() {
+    if(empty(state->previous_search)) return;
+    span search_term = skip_n(state->previous_search, 1);
+    int match_index = -1;
+    for (int i = state->blocks.n - 1; i >= 0; --i) {
+        if (i < state->current_index && contains(state->blocks.s[i], search_term)) {
+            match_index = i;
+            break;
+        }
+    }
+    if (match_index != -1) {
+        state->current_index = match_index;
+    }
 }
 
 /* Settings.
@@ -1597,12 +1949,13 @@ void parse_config() {
 
 void settings_mode(){}
 /*
-In read_line, we get a span pointer to some space that we can use to store input from the user.
+In read_line, we get a span pointer to some space that we can use to store input from the user, and a default value.
+
 Just to be sure, we always assert(len(buffer)) which helps catch some programming errors that have happened in the past.
 
-We first print our prompt, which is "> ".
+We first print our prompt, which is "> ", followed by the default if any.
 
-Recall that we use prt() as always.
+We use prt() as always.
 
 We handle some basic line editing using our getch() in a loop, until enter is hit.
 At that point we return a span containing the user's input.
@@ -1616,33 +1969,32 @@ The line editing we support:
 - everything else just gets appended to our span, which it extends.
 */
 
-span read_line(span* buffer) {
-    assert(len(*buffer));
-    prt("> ");
-    flush();
-
-    span input = {buffer->buf, buffer->buf}; // Initialize input span to start at buffer start
-
-    while (1) {
-        char ch = getch(); // Read a single character from input
-
-        if (ch == '\n') {
-            prt("\n"); // Newline for visual separation of input
-            break; // Return on enter
-        } else if ((ch == '\b' || ch == 127) && input.buf < input.end) {
-            // Handle backspace (ASCII BACKSPACE and DEL)
-            input.end--; // Shorten the span by one
-            prt("\033[2K\r> %.*s", (int)(input.end - input.buf), input.buf); // Redraw the line
-        } else {
-            *input.end++ = ch; // Append character to span and extend it
-            prt("%c", ch); // Echo the character
-        }
-        flush(); // Ensure output is updated immediately
+span read_line(span *buffer, span default_value) {
+    assert(len(*buffer) > 0); // Ensure buffer is not empty
+    span line = { .buf = buffer->buf, .end = buffer->buf }; // Initialize line span to empty
+    if (!empty(default_value)) { // If default value is provided
+        memcpy(buffer->buf, default_value.buf, len(default_value)); // Copy default into buffer
+        line.end += len(default_value); // Adjust end of line span
     }
-
-    buffer->buf = input.end; // Update the original buffer to point to the end of the input
-    return input; // Return the span containing the user's input
+    prt("> %.*s", len(line), line.buf); // Print prompt and current line content
+    flush(); // Ensure output is visible
+    char ch;
+    while ((ch = getch()) != '\n') { // Read input until enter is hit
+        if (ch == '\b' || ch == 127) { // Handle backspace (ASCII DEL or backspace)
+            if (line.buf < line.end) { // Check if there's a character to delete
+                line.end--; // Shorten the span by one
+                prt("\033[D \033[D"); // Move cursor back, clear character, move back again
+            }
+        } else { // For all other characters
+            *line.end++ = ch; // Append character to span
+            w_char(ch); // Print character
+        }
+        flush(); // Ensure output is visible
+    }
+    *buffer = (span){ .buf = line.end, .end = buffer->end }; // Adjust input buffer span to exclude the read line
+    return (span){ .buf = line.buf, .end = line.end }; // Return the span containing user input
 }
+
 /* save_conf_files()
 
 Here we write the language and file lines into the conf file.
@@ -1702,6 +2054,7 @@ void save_conf() {
     write_to_file_span(original_cmp_end, state->config_file_path, 1);
     cmp.end = original_cmp_end.buf;
 }
+
 /* #add_projfile(span)
 
 Here we add a file to the projfiles and ensure that the file exists on disk.
@@ -1771,24 +2124,24 @@ void check_conf_vars() {
     int confChanged = 0;
     span cmpComplement = cmp_compl();
 
-    #define CHECK_SET(var, prompt) \
+    #define CHECK_SET(var, prompt, defaultValue) \
     if (empty(state->var)) { \
         prt(prompt); \
         flush(); \
-        span input = read_line(&cmpComplement); \
+        span input = read_line(&cmpComplement, defaultValue); \
         cmp.end = input.end; \
-        state->var = input; \
+        state->var = empty(input) ? defaultValue : input; \
         confChanged = 1; \
     }
 
-    CHECK_SET(revdir, "Enter the directory to save revisions (e.g., .cmpr/revs):\n")
-    CHECK_SET(tmpdir, "Enter the directory for temporary files (e.g., .cmpr/tmp):\n")
+    CHECK_SET(revdir, "Enter the directory to save revisions (e.g., .cmpr/revs):\n", S(".cmpr/revs"))
+    CHECK_SET(tmpdir, "Enter the directory for temporary files (e.g., .cmpr/tmp):\n", S(".cmpr/tmp"))
 
     if (state->files.n == 0) {
         while (1) {
             prt("Enter at least one project file (e.g. main.c or main.py or index.js) where your blocks will be stored:\n");
             flush();
-            span input = read_line(&cmpComplement);
+            span input = read_line(&cmpComplement, nullspan());
             cmp.end = input.end;
             if (add_projfile(input)) {
                 confChanged = 1;
@@ -1801,7 +2154,7 @@ void check_conf_vars() {
         if (empty(state->files.a[i].language)) {
             prt("Please specify a language for %.*s, one of C, Python, JavaScript:\n", len(state->files.a[i].path), state->files.a[i].path.buf);
             flush();
-            span input = read_line(&cmpComplement);
+            span input = read_line(&cmpComplement, nullspan());
             cmp.end = input.end;
             state->files.a[i].language = input;
             confChanged = 1;
@@ -1814,6 +2167,7 @@ void check_conf_vars() {
 
     #undef CHECK_SET
 }
+
 /*
 In ensure_conf_var() we are given a span, which must be one of the conf vars on the state, a message for the user to explain what the conf setting does and why it is required, and a default or current value that we can pass through to read_line.
 
@@ -1835,12 +2189,13 @@ void ensure_conf_var(span* var, span message, span default_value) {
     }
 
     span buffer = cmp_compl(); // Get complement of cmp space as a span for input
-    *var = read_line(&buffer); // Read new value from user
+    *var = read_line(&buffer, default_value); // Read new value from user
 
     cmp.end = buffer.buf; // Update cmp.end to the end of the returned span from read_line
 
     save_conf(); // Rewrite the configuration file with the updated setting
 }
+
 /*
 To edit the current block we first write it out to a file, which we do with a helper function write_to_file(span, char*).
 
@@ -1853,31 +2208,18 @@ If so, then we call another function which will then read the edited file conten
 If not, we print a short message to let the user know their changes were ignored.
 */
 
-char* tmp_filename();
-int launch_editor(char* filename);
-void handle_edited_file(char* filename);
-
 void edit_current_block() {
   if (state->current_index >= 0 && state->current_index < state->blocks.n) {
-    // Get a temporary filename based on the current UI state
     char* filename = tmp_filename();
-
-    // Write the current block to the temporary file
     write_to_file(state->blocks.s[state->current_index], filename);
-
-    // Launch the editor on the temporary file
     int editor_exit_code = launch_editor(filename);
 
-    // Check if the editor exited normally
     if (editor_exit_code == 0) {
-      // Handle the edited file (read changes, update the block, etc.)
       handle_edited_file(filename);
     } else {
-      // Optionally handle abnormal editor exit
       prt("Editor exited abnormally. Changes might not be saved.\n");
     }
 
-    // Cleanup: Free the filename if allocated dynamically
     free(filename);
   }
 }
@@ -2021,13 +2363,7 @@ We need to update the blocks, since any blocks after and including this one may 
 
 Then we call a helper function, new_rev, which takes the filename and the file index for the projfile that was altered.
 This function is responsible for storing a new rev, cleaning up the tmp file, and any reporting to the user that we might do.
-We include a forward declaration here for new_rev.
-
-Relevant helper functions:
-void new_rev(char*,int);
 */
-
-void new_rev(char*, int);
 
 void handle_edited_file(char* filename) {
     int file_index = file_for_block(state->blocks.s[state->current_index]);
@@ -2076,8 +2412,8 @@ void handle_edited_file(char* filename) {
     new_rev(filename, file_index);
 }
 
-void update_link(char* new_filename);
-/*
+/* #new_rev
+
 Here we store a new revision, given a filename which contains a block that was edited and the index of the projfile that contains that block.
 The file contents have already been processed, we just get the name so that we can clean up the file when done.
 
@@ -2190,7 +2526,8 @@ void rewrite_current_block_with_llm() {
   send_to_clipboard(prompt);
 }
 
-/*
+/* #block_comment_part
+
 To split out the block_comment_part of a span, we first write two helper functions, one for C and one for Python.
 Others will be added but these are the only ones we've needed so far.
 
@@ -2249,6 +2586,62 @@ span block_comment_part(span block) {
     span result = {block.buf, block.buf + end};
     return result;
 }
+
+/* #print_block #print_comment #print_code #count_blocks
+
+In these print_* implementations we print block contents completely or partially.
+
+We use block_comment_part to get a span containing the comment part of a block.
+We can use this pattern to get the code part: span code_part = block; code_part.buf = comment_part.end.
+
+TODO: add this as a spanio method (complement of span in span).
+
+count_blocks() is a trivial wrapper around state.blocks.n.
+*/
+
+void print_comment(int index) {
+    if (index < 0 || index >= state->blocks.n) return;
+    span block = state->blocks.s[index];
+    span comment_part = block_comment_part(block);
+    wrs(comment_part);
+    terpri();
+}
+
+void print_code(int index) {
+    if (index < 0 || index >= state->blocks.n) return;
+    span block = state->blocks.s[index];
+    span comment_part = block_comment_part(block);
+    span code_part = block;
+    code_part.buf = comment_part.end;
+    wrs(code_part);
+    terpri();
+}
+
+void print_block(int index) {
+    if (index < 0 || index >= state->blocks.n) return;
+    span block = state->blocks.s[index];
+    wrs(block);
+    terpri();
+}
+
+int count_blocks() {
+    return state->blocks.n;
+}
+
+/* #find_block
+
+This is similar to the search implementation: we iterate over all the blocks, find the first block which contains the literal search text provided, and return the index of that block (or -1 if none matches).
+*/
+
+int find_block(span search_text) {
+    for (int i = 0; i < state->blocks.n; i++) {
+        if (contains(state->blocks.s[i], search_text)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 /*
 In comment_to_prompt, we use the cmp space to construct a prompt around the given block comment.
 
@@ -2371,34 +2764,51 @@ First we call ensure_conf_var with the message "Command to get text from the cli
 
 This will contain a command like "xclip -o -selection clipboard" (our default) or "pbpaste" on Mac, and comes from our conf file.
 
+Then we call pipe_cmd_cmp(span) and returns a span of piped in data from the clipboard, which we pass on to replace_block_code_part().
+*/
+
+span pipe_cmd_cmp(span);
+
+void replace_code_clipboard() {
+    ensure_conf_var(&state->cbpaste, S("Command to get text from the clipboard on your platform (Mac: pbpaste, Linux: try xclip -o -selection clipboard, Windows: ?)"), S("xclip -o -selection clipboard"));
+    span new_content = pipe_cmd_cmp(state->cbpaste);
+    replace_block_code_part(new_content);
+}
+
+/* #pipe_cmd_cmp()
+
+We get a command (as a span) and we run it, sending the output into the complement of cmp in cmp_space.
+
 Use s() and a char[2048] to prep the popen() call.
 
 We use the cmp buffer to store this data, starting from cmp.end (which is always somewhere before the end of the cmp space big buffer).
 
 The space that we can use is the difference between cmp_space + BUF_SZ, which locates the end of the cmp_space, and cmp.end, which is always less than this limit.
 
-We then create a span, which is pointing into cmp, capturing the new data we just captured.
+We then create a span, which is pointing into cmp, capturing the new data we just captured, which is our return value.
 
-We call another function, replace_block_code_part(span) which takes this new span and the current state.
-It is responsible for all further processing, notifications to the user, etc.
+Note: obviously we need the value of fread() to know the length of the incoming data
 
-Note: when this function returns, cmp.end is unchanged.
-This invalidates the span we created, but that's fine since it's about to go out of scope and we're done with it.
-
-Note 2: obviously we need the value of fread() to know the length of the incoming data
+Note: we can assert that the bytes read fits in the cmp space
 */
 
-void replace_code_clipboard() {
-    ensure_conf_var(&state->cbpaste, S("Command to get text from the clipboard on your platform (Mac: pbpaste, Linux: try xclip -o -selection clipboard, Windows: ?)"), S("xclip -o -selection clipboard"));
-    char cmd[2048];
-    s(cmd, 2048, state->cbpaste);
-    FILE *pipe = popen(cmd, "r");
-    if (!pipe) return;
-    size_t nbytes = fread(cmp.end, 1, cmp_space + BUF_SZ - cmp.end, pipe);
-    span new_content = {cmp.end, cmp.end + nbytes};
-    replace_block_code_part(new_content);
+span pipe_cmd_cmp(span cmd) {
+    char cmd_str[2048];
+    s(cmd_str, 2048, cmd);
+    FILE *pipe = popen(cmd_str, "r");
+    assert(pipe != NULL);
+
+    size_t space_available = (cmp_space + BUF_SZ) - cmp.end;
+    size_t bytes_read = fread(cmp.end, 1, space_available, pipe);
+    assert(bytes_read <= space_available);
+
+    span result = {cmp.end, cmp.end + bytes_read};
+    cmp.end += bytes_read;
+
     pclose(pipe);
+    return result;
 }
+
 /* #replace_block_code_part(span)
 
 Here we get a span (into cmp space) which contains a new code part for the current block.
@@ -2434,30 +2844,50 @@ Once all this is done, we call new_rev, passing NULL for the filename argument, 
 */
 
 void replace_block_code_part(span new_code) {
+    int file_index = file_for_block(state->blocks.s[state->current_index]);
     span original_block = state->blocks.s[state->current_index];
-    int file_index = file_for_block(original_block);
     span comment_part = block_comment_part(original_block);
-    int newlines_to_add = 2 - (len(comment_part) >= 2 && comment_part.buf[len(comment_part) - 2] == '\n' ? 1 : 0) - (len(comment_part) && comment_part.buf[len(comment_part) - 1] == '\n' ? 1 : 0);
-    newlines_to_add = newlines_to_add < 0 ? 0 : newlines_to_add;
-    int new_block_len = len(comment_part) + newlines_to_add + len(new_code) + 1; // +1 for the newline after the code part
-    int old_block_len = len(original_block);
-    int diff = new_block_len - old_block_len;
-    if (diff != 0) {
-        memmove(original_block.buf + old_block_len + diff, original_block.buf + old_block_len, len(inp) - (original_block.buf - inp.buf) - old_block_len);
+
+    int newlines_needed = 2;
+    if (len(comment_part) > 0 && comment_part.end[-1] == '\n') {
+        newlines_needed = 1;
+        if (comment_part.end - comment_part.buf > 1 && comment_part.end[-2] == '\n') {
+            newlines_needed = 0;
+        }
     }
-    char *cursor = original_block.buf + len(comment_part);
-    for (int i = 0; i < newlines_to_add; ++i) {
-        *cursor++ = '\n';
+
+    int newlines_needed_after_code = 1;
+
+    size_t new_block_length = len(comment_part) + newlines_needed + len(new_code) + newlines_needed_after_code;
+    ssize_t size_diff = new_block_length - (original_block.end - original_block.buf);
+
+    if (size_diff != 0) {
+        memmove(original_block.end + size_diff, original_block.end, inp.end - original_block.end);
     }
-    memcpy(cursor, new_code.buf, len(new_code));
-    cursor += len(new_code);
-    *cursor++ = '\n';
-    inp.end += diff;
+
+    unsigned char* current_pos = original_block.buf + len(comment_part);
+    for (int i = 0; i < newlines_needed; ++i) {
+        *current_pos++ = '\n';
+    }
+
+    memcpy(current_pos, new_code.buf, len(new_code));
+
+    *(current_pos + len(new_code)) = '\n';
+
+    // Update inp.end to reflect the new size
+    inp.end += size_diff;
+
+    // Update the contents span of the current and subsequent files
+    state->files.a[file_index].contents.end += size_diff;
     for (int i = file_index + 1; i < state->files.n; ++i) {
-        state->files.a[i].contents.buf += diff;
-        state->files.a[i].contents.end += diff;
+        state->files.a[i].contents.buf += size_diff;
+        state->files.a[i].contents.end += size_diff;
     }
+
+    // Re-find all the blocks since inp has changed
     find_all_blocks();
+
+    // Store a new revision, no filename required
     new_rev(NULL, file_index);
 }
 /* cmpr_init
@@ -2483,3 +2913,4 @@ void cmpr_init() {
         fclose(file);
     }
 }
+

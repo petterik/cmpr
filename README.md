@@ -2,7 +2,7 @@
 
 ## Program in English!
 
-People started out programming machines by directly writing the machine code, and then we got assemblers and compilers, and we could write high-level languages instead.
+People started out programming machines by directly writing the machine code, then we got assemblers and compilers, and we could write high-level languages instead.
 Now we have LLMs, and the LLM is the new compiler.
 We can write English and let the LLM turn that into code.
 However, the programmer still has to be closely involved in the work, specifying the approach and checking the code.
@@ -42,9 +42,13 @@ You could edit the prompt, but usually you'll just hit Enter.
 ChatGPT writes the code, you can click "copy code" in the ChatGPT window, and then hit "R" (uppercase) back in cmpr to replace everything after the comment (i.e. the code half of the block) with the clipboard contents.
 Mnemonic: "r" gets the LLM to "rewrite" (or "replace") the code to match the comment (and "R" is the opposite of "r").
 
-Hit "q" to quit, "?" for short help, and "b" to build by running some build command that you specify.
+Hit "q" to quit, "?" for short help, and "B" to build by running some build command that you specify.
 
 The features we have today are mostly around editing a single block; we are currently adding support for more multi-block operations.
+
+There's preliminary support for a "bootstrap" script, you create a script that generates a "start of day" prompt on stdout, and then use ":bootstrap" to run that script and put the output on the clipboard.
+To support setting up a script like this, you can use the `--find-block`, `--print-block`, `--print-comment`, `--print-code` command-line flags.
+For more details on this feature, which is likely to change, stop by the discord.
 
 ## Why blocks?
 
@@ -61,6 +65,7 @@ So the block size is determined by the amount of code that the LLM can write in 
 3. `export EDITOR=emacs` or whatever editor you use, or vi will be run by default.
 4. Run `cmpr` in this directory, and it will ask you some configuration questions.
    If you want to change the answers later, you can edit the .cmpr/conf file.
+5. Stop by discord and ask if you hit any roadblocks!
 
 ### Bonus: cmpr in cmpr
 

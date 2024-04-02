@@ -2,6 +2,7 @@ projdir:
 revdir: cmpr/revs
 tmpdir: cmpr/tmp
 buildcmd: (cd cmpr && make)
+bootstrap: cmpr/bootstrap.sh
 cbcopy: xclip -i -selection clipboard
 cbpaste: xclip -o -selection clipboard
 
@@ -12,3 +13,4 @@ file: cmpr/README.md
 file: cmpr/cmpr.c
 file: cmpr/spanio.c
 file: cmpr/second
+file: cmpr/bootstrap.sh

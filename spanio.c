@@ -30,7 +30,7 @@ We ALWAYS use spanio methods when possible and never use null-terminated C strin
 - `next_line(span*)`: Extracts the next line (up to \n or .end) from a span and returns it as a new span.
 - `span_eq(span, span)`, `span_cmp(span, span)`: Compares two spans for equality or lexicographical order.
 - `S(char*)`: Creates a span from a null-terminated string.
-- `s(char*,int,span)`: Creates a null-terminated string in a user-provided buffer of provided length from given span.
+- `char* s(char*,int,span)`: Creates a null-terminated string in a user-provided buffer of provided length from given span, which it also returns for convenience.
 - `nullspan()`: Returns an empty span.
 - `spans_alloc(int)`: Allocates a spans structure with a specified number of span elements.
 - `span_arena_alloc(int)`, `span_arena_free()`, `span_arena_push()`, `span_arena_pop()`: Manages a memory arena for dynamic allocation of spans.
@@ -268,10 +268,11 @@ span S(char *s) {
   return ret;
 }
 
-void s(char* buf, int n, span s) {
+char* s(char* buf, int n, span s) {
   size_t l = (n - 1) < len(s) ? (n - 1) : len(s);
   memmove(buf, s.buf, l);
   buf[l] = '\0';
+  return buf;
 }
 
 void read_and_count_stdin() {
@@ -594,6 +595,11 @@ span first_n(span s, int n) {
   return ret;
 }
 
+span skip_n(span s, int n) {
+  if (len(s) <= n) return (span){s.end, s.end};
+  return (span){s.buf + n, s.end};
+}
+
 int find_char(span s, char c) {
   for (int i = 0; i < len(s); ++i) {
     if (s.buf[i] == c) return i;
@@ -854,92 +860,3 @@ span out_compl() {
   return compl;
 }
 
-/* Random or experimental prompts.
-
-We are writing cmpr, which is a tool to interact with LLMs and is written in C.
-
-Here is information about spanio, the library we are using:
-
-Note that spanio is already included, so don't include header files (ever, for it or anything else).
-
-$LIBRARY_INFO$
-
-Here's our ctags:
-
-```
-$CTAGS$
-```
-
-If in the future you need to see the implementation of any of these functions, you can ask. Confirm this by including "I can ask for function contents." in your reply.
-
-We have a few globals; to those already part of spanio (inp, out, cmp, etc.) we add state, a pointer to the ui_state struct, automatically available everywhere:
-
-#define CONFIG_FIELDS \
-X(projdir) \
-X(revdir) \
-X(tmpdir) \
-X(buildcmd) \
-X(cbcopy) \
-X(cbpaste)
-
-typedef struct ui_state {
-    projfiles files;
-    span current_language;
-    spans blocks;
-    int current_index;
-    int marked_index;
-    span search;
-    span config_file_path;
-    int terminal_rows;
-    int terminal_cols;
-    int scrolled_lines;
-    #define X(name) span name;
-    CONFIG_FIELDS
-    #undef X
-} ui_state;
-
-ui_state* state;
-
-- projdir, location of the project directory that we are working with as a span
-- revdir, a span containing a relative or absolute path to where we store our revisions
-- tmpdir, another path for temp files that we use for editing blocks
-- buildcmd, the command to do a build (e.g. by the "b" key)
-- cbcopy, the command to pipe data to the clipboard on the user's platform
-- cbpaste, the same but for getting data from the clipboard
-
-The projfiles type is created by MAKE_ARENA and has the methods defined for our generic array types (with element type projfile).
-In particular, we use projfiles_alloc with a sufficient capacity in main() and then we use projfiles_push() whenever we populate a project file.
-
-In the library intro above there are some idioms and advice given at the very end. Extremely briefly, summarize these in bullet form, starting with "- spans uses .s not .a".
-
-TODO: add the projfile type
-
-
---------
-
-
-
-This is called #langtable:
-
-```c
-$LANGTABLE$
-```
-
-Reply with "OK".
-
-
-
-
-(Note: we can figure out all the above from the #langtable and #replywithok tags on the block!)
-
-
-
---------
-
-
-
-Similar for #all_functions (or maybe ctags is enough, but maybe if we only do it for cmpr.c).
-
-Note: `ctags spanio.c cmpr.c` probably the right command.
-
-*/
