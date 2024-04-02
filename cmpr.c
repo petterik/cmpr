@@ -1205,36 +1205,40 @@ In handle_keystroke, we support the following single-char inputs:
 - ?, display brief help about the keyboard shortcuts available
 - q, exits (with prt("goodbye\n"); flush(); exit(0))
 
-To get the help text we can basically copy the lines above, except formatted nicely for terminal output.
-We split out j/k and g/G onto their own lines though.
-Include all relevant details about usage that might be non-obvious, e.g.:
-- r "puts a prompt on the clipboard to rewrite the code part based on comment part"
-Include mnemonic hints where given (e.g. "back" for b).
-We can call clear_display first, and flush, getch after, so the user has time to read the help (we prompt them about this).
-
 We call terpri() on the first line of this function (just to separate output from any handler function from the ruler line).
 
 Implemented inline: j,k,g,G,q
-All others call helper functions already declared, e.g.
-B -> compile(),
-u -> rev_decr(),
-R -> replace_code_clipboard().
+All others call helper functions already declared, e.g.:
+B -> compile()
+u -> rev_decr()
+R -> replace_code_clipboard()
+? -> keyboard_help()
+
+Any of j,k,g,G that change the current_index must also reset pagination (scrolled_lines -> 0).
 */
 
 void handle_keystroke(char input) {
     terpri();
     switch (input) {
         case 'j':
-            if (state->current_index < count_blocks() - 1) state->current_index++;
+            if (state->current_index < count_blocks() - 1) {
+                state->current_index++;
+                state->scrolled_lines = 0;
+            }
             break;
         case 'k':
-            if (state->current_index > 0) state->current_index--;
+            if (state->current_index > 0) {
+                state->current_index--;
+                state->scrolled_lines = 0;
+            }
             break;
         case 'g':
             state->current_index = 0;
+            state->scrolled_lines = 0;
             break;
         case 'G':
             state->current_index = count_blocks() - 1;
+            state->scrolled_lines = 0;
             break;
         case 'e':
             edit_current_block();
@@ -1276,32 +1280,54 @@ void handle_keystroke(char input) {
             settings_mode();
             break;
         case '?':
-            clear_display();
-            prt("j/k - Go up/down one block. No-op at boundaries.\n");
-            prt("g/G - Go to first/last block.\n");
-            prt("e - Edit current block in $EDITOR (default vi).\n");
-            prt("r - LLM rewrites code part based on comment, updates clipboard.\n");
-            prt("R - Replace code part with current clipboard contents.\n");
-            prt("u - Undo last action.\n");
-            prt("space/b - Paginate down/back up within a block.\n");
-            prt("B - Execute build command.\n");
-            prt("v - Toggle visual selection mode.\n");
-            prt("/ - Enter search mode.\n");
-            prt(": - Enter ex command line.\n");
-            prt("n/N - Repeat search in forward/backward direction.\n");
-            prt("S - Enter settings mode.\n");
-            prt("? - Display this help.\n");
-            prt("q - Exit (prints \"goodbye\\n\").\n");
-            prt("Press any key to continue...\n");
-            flush();
-            getch();
+            keyboard_help();
             break;
         case 'q':
             prt("goodbye\n");
             flush();
             exit(0);
             break;
+        default:
+            break;
     }
+}
+
+/* #keyboard_help
+
+To get the help text we basically copy the lines in #handle_keystrokes above, except formatted nicely for terminal output.
+We split out j/k and g/G onto their own lines though.
+Include all relevant details about usage that might be non-obvious, e.g.:
+- r "puts a prompt on the clipboard to rewrite the code part based on comment part"
+Include mnemonic hints where given (e.g. "back" for b).
+
+We call clear_display first, and flush, getch after, so the user has time to read the help (we prompt them about this).
+*/
+
+void keyboard_help() {
+    clear_display();
+    prt("Keyboard shortcuts:\n");
+    prt("j    - Go down one block\n");
+    prt("k    - Go up one block\n");
+    prt("g    - Go to the first block\n");
+    prt("G    - Go to the last block\n");
+    prt("e    - Edit the current block in $EDITOR\n");
+    prt("r    - Rewrite code part based on comment part; clipboard updated\n");
+    prt("R    - Replace code part with clipboard contents\n");
+    prt("u    - Undo\n");
+    prt("space- Paginate down within a block\n");
+    prt("b    - Paginate up (\"back\") within a block\n");
+    prt("B    - Build project with provided command\n");
+    prt("v    - Toggle visual selection mode\n");
+    prt("/    - Enter search mode\n");
+    prt(":    - Enter ex command line\n");
+    prt("n    - Repeat search forward\n");
+    prt("N    - Repeat search backward\n");
+    prt("S    - Enter settings mode\n");
+    prt("?    - Display this help\n");
+    prt("q    - Quit\n");
+    prt("\nPress any key to return...\n");
+    flush();
+    getch();
 }
 
 /* #start_search
@@ -1649,34 +1675,33 @@ First we print a line "Block N" and decrement this variable by one.
 We have a ruler line at the bottom that we need to leave room for, so we make another variable, remaining_content_lines, that is one less than remaining lines, and call count_physical_lines again with this variable, letting us determine how many lines are actually printed, and more importantly, giving us a span of the appropriate content to at-most fill the screen.
 
 We then print this content by wrs().
-Note that the int passed by reference into count_physical_lines will be DECREMENTED by the number of actual physical lines of content in the returned span.
-Therefore, the value of this variable after the call is the number of REMAINING lines of content area yet to be filled, thus, while this remains positive, we print blank lines, filling the content area.
+We then ...
 Finally, we call print_ruler to handle the last line of the terminal.
 */
 
 void print_single_block_with_skipping(int block_index, int skipped_lines) {
     span block = state->blocks.s[block_index];
+    int physical_lines = skipped_lines;
+    span skipped_span = count_physical_lines(block, &physical_lines);
+    span block_suffix = block;
+    block_suffix.buf = skipped_span.end;
+
     int remaining_rows = state->terminal_rows;
-
-    span skipped_span = count_physical_lines(block, &skipped_lines);
-    block.buf = skipped_span.end;
-
     prt("Block %d\n", block_index + 1);
-    remaining_rows--;
+    --remaining_rows;
 
     int remaining_content_lines = remaining_rows - 1;
-    span content_to_print = count_physical_lines(block, &remaining_content_lines);
-
+    span content_to_print = count_physical_lines(block_suffix, &remaining_content_lines);
     wrs(content_to_print);
-    remaining_rows -= (state->terminal_rows - 1 - remaining_content_lines);
 
-    while (remaining_rows > 1) {
+    /* *** manual fixup *** totally failed to get GPT4 to write this */
+    while (remaining_content_lines-- > 0) {
         terpri();
-        remaining_rows--;
     }
 
     print_ruler();
 }
+
 /*
 In print_physical_lines, we get a span, and a number of lines.
 We can use next_line on the span to get each logical line, and then we use the terminal_cols on the state to determine the number of physical lines that each one will require.
