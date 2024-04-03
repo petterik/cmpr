@@ -77,11 +77,11 @@
   ✓ first version of bootstrap can be the first extended (ex commands) :bootstrap
   ✓ push v5
   ✓ fix --init
-    push v6
-    'v' by accident is annoying
+  ✓ 'v' by accident is annoying
+  ✓ push v6
+    dataloss pass: think through everything; addresses control issue
     add :tests
       tests: --init, main loop (j/k/g/G), find and print block features, Python support, [...]
-    dataloss pass: think through everything; addresses control issue
     unified diff stuff
       try getting GPT4 to suggest changes to the comment part
     bug: (mkdir pytest; cd pytest; cmpr --init; cmpr # use Python language with .cmpr/conf)
