@@ -2,7 +2,8 @@ projdir:
 revdir: cmpr/revs
 tmpdir: cmpr/tmp
 buildcmd: (cd cmpr && make)
-bootstrap: cmpr/bootstrap.sh
+bootstrap: (chmod +x cmpr/bootstrap.sh && cmpr/bootstrap.sh)
+tests: (cd cmpr; rm -rf cmpr-init-test; mkdir cmpr-init-test; cd cmpr-init-test; ../dist/cmpr --init; find .)
 cbcopy: xclip -i -selection clipboard
 cbpaste: xclip -o -selection clipboard
 

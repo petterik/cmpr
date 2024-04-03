@@ -74,17 +74,38 @@
   ✓ when switching blocks we should reset pagination (per-block(?))
   ✓ R should ensure that there is a newline at the end
   ✓ fix ruler position bug
+  ✓ first version of bootstrap can be the first extended (ex commands) :bootstrap
   ✓ push v5
+  ✓ fix --init
+    push v6
+    'v' by accident is annoying
+    add :tests
+      tests: --init, main loop (j/k/g/G), find and print block features, Python support, [...]
+    dataloss pass: think through everything; addresses control issue
+    unified diff stuff
+      try getting GPT4 to suggest changes to the comment part
+    bug: (mkdir pytest; cd pytest; cmpr --init; cmpr # use Python language with .cmpr/conf)
+    add markdown support
+    put something in the README about coexistence with SCMs/git
+    just create revdir and tmpdir if they don't exist
+    example blocks should be in the README (maybe the arg parsing one)
+    *** soft launch ***
+    try more with VSCode support
+    librification / cleanup
     "total rev awareness"
+      start with bpe(?)
+      https://en.wikipedia.org/wiki/Johnson%E2%80%93Lindenstrauss_lemma
+      start by determining which revs go to which files
       is a set of features starting from an index or rolling hash
+      indexed at newlines(?)
       subsumes diff features, data loss prevention on save, block -> rev indexing
       conflicts with catalog file idea (?)
     data loss when two cmprs open (related to rev currency check)
+    not mint a rev if block unchanged / basic diff features "d" for diff (by def. w/ prev rev) of block
     add u for "R"
     ✓ sort the revdir and print everything
       add a catalog file in revs/catalog
       every rev gets written to it, and we parse it on startup
-    first version of bootstrap can be the first extended (ex commands) :bootstrap
     might as well start with a (tabular-programmed) set of them:
       :bootstrap :addfile :addlib :help
     actually use the arena allocation to e.g. reclaim cmp space (clipboard handling, etc)
@@ -106,7 +127,6 @@
       only on block changes for efficiency / over all code by special command
     think about using the LLM to write the comment and not just the code (i.e. 'r' and 'R')
     check if current file == latest rev on load, if not store a new rev
-    not mint a rev if block unchanged / basic diff features "d" for diff (by def. w/ prev rev) of block
     support API usage
     parametrize comment_to_prompt
     make the prompts all config -- or all files in .cmpr
@@ -136,4 +156,5 @@
     intro video -- mp4 or gif in repo -- youtube (language switch)
     basic stats on blocks e.g. comment-code ratio
     video note: we have done things (not 2048) out of training set
-    https://en.wikipedia.org/wiki/Johnson%E2%80%93Lindenstrauss_lemma
+    issue with the exec bit on bootstrap.sh
+    experiment with GPT4 finetunes

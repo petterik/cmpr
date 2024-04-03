@@ -361,15 +361,15 @@ Command argument and flag table:
 --init
 --version
 --print-block <index>
---print-code <index>
 --print-comment <index>
+--print-code <index>
 --find-block <search>
 --count-blocks
 
 2. Behavior of arguments and flags:
 
 conf:
-  Use an alternate configuration file given by <filepath>.
+  Use an alternate configuration file given by <filepath>; otherwise proceed normally.
 
 print-conf:
   Print configuration settings and exit.
@@ -382,6 +382,9 @@ init:
 
 version:
   Print the version number and build timestamp and exit.
+
+print-{block,comment,code}:
+  Print the revelant part (or whole) of the block given by the one-based index.
 
 3. Implementation notes:
 
@@ -397,14 +400,19 @@ help:
   we include argv[0] as usual and summarize everything we support.
 
 init:
-  we just call cmpr_init; we also need to do this after --conf was handled if any
+  we just call cmpr_init; we can't combine this with --conf, because --init creates the configuration file and we don't want to create configuration files in random places (the user can still move the file themselves and use --conf later if they are doing something exotic)
 
 version:
   we prt "Version: $VERSION$" here; the dollar-delimited variable-looking thing is replaced by a build step
 
+--help, --init, --version:
+  these three flags all are "action args"; if one is provided, any other flags will have no effect
+  if more than one is given, any one of them may take effect (we don't care which), but not more than one
+
 print-{code,comment,block}, count-blocks, find-block:
   all of these require the code be loaded, which normally happens after we are called
   so if any of these flags are used we call get_code() first, then we call the appropriate function, then flush and exit successfully
+  we always use one-based indexes for anything user-visible, so we must add or subtract one when calling our functions (find_block, print_block, print_comment, print_code)
 
 4. Help strings:
 
@@ -440,11 +448,17 @@ Here are some random further implementation notes on that:
 
 There are things that have to be handled in specific orderings.
 Our basic technique here is to set indicators (0- or 1-valued ints) in our arg-handling loop.
+These are used directly in if statements, like `if (ind_print_block) { ...`.
 Below the loop we then handle the necessaries in the correct order.
 We use "int ind_*" for these variables so they don't conflict with functions or anything else we already have.
+We also have an int "action_arg" which tracks whether one of the action flags has been set, char pointers for string arguments like conf filepath or find-block search, and a block index which is shared by print-{block,comment,code}.
 
 None of these flags can be combined: print-block, print-comment, print-code, find-block, count-blocks.
 If more than one is set, we print an error message and exit.
+If any of these are set then we exit successfully, but if none of them is, then we will return from this function and enter our main loop.
+
+Because --init is used to set up the config file, it cannot be combined with --conf, if it is, we also print an error and exit.
+Also, if we are doing an --init, we need to not try to parse the config file, because that will definitely fail.
 
 If "--conf <alternate-config-file>" is passed, we update config_file_path on the state.
 Once we know the conf file to read from, we call parse_config before we do anything else.
@@ -458,65 +472,93 @@ In particular, even if no alternate conf file was set, we still need to read the
 
 void handle_args(int argc, char **argv) {
     int ind_conf = 0, ind_print_conf = 0, ind_help = 0, ind_init = 0, ind_version = 0;
-    int ind_print_block = -1, ind_print_code = -1, ind_print_comment = -1;
-    int ind_find_block = 0, ind_count_blocks = 0;
-    span find_block_search = nullspan();
+    int ind_print_block = 0, ind_print_comment = 0, ind_print_code = 0, ind_find_block = 0, ind_count_blocks = 0;
+    int action_arg = 0;
+    char *conf_filepath = NULL, *find_block_search = NULL;
+    int block_index = -1;
 
-    for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--conf") && i + 1 < argc) {
-            state->config_file_path = S(argv[++i]);
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--conf") == 0 && i + 1 < argc) {
+            conf_filepath = argv[++i];
             ind_conf = 1;
-        } else if (!strcmp(argv[i], "--print-conf")) {
+        } else if (strcmp(argv[i], "--print-conf") == 0) {
             ind_print_conf = 1;
-        } else if (!strcmp(argv[i], "--help")) {
+            action_arg = 1;
+        } else if (strcmp(argv[i], "--help") == 0) {
             ind_help = 1;
-        } else if (!strcmp(argv[i], "--init")) {
+            action_arg = 1;
+        } else if (strcmp(argv[i], "--init") == 0) {
             ind_init = 1;
-        } else if (!strcmp(argv[i], "--version")) {
+            action_arg = 1;
+        } else if (strcmp(argv[i], "--version") == 0) {
             ind_version = 1;
-        } else if (!strcmp(argv[i], "--print-block") && i + 1 < argc) {
-            ind_print_block = atoi(argv[++i]);
-        } else if (!strcmp(argv[i], "--print-code") && i + 1 < argc) {
-            ind_print_code = atoi(argv[++i]);
-        } else if (!strcmp(argv[i], "--print-comment") && i + 1 < argc) {
-            ind_print_comment = atoi(argv[++i]);
-        } else if (!strcmp(argv[i], "--find-block") && i + 1 < argc) {
-            find_block_search = S(argv[++i]);
+            action_arg = 1;
+        } else if (strcmp(argv[i], "--print-block") == 0 && i + 1 < argc) {
+            block_index = atoi(argv[++i]) - 1;
+            ind_print_block = 1;
+        } else if (strcmp(argv[i], "--print-comment") == 0 && i + 1 < argc) {
+            block_index = atoi(argv[++i]) - 1;
+            ind_print_comment = 1;
+        } else if (strcmp(argv[i], "--print-code") == 0 && i + 1 < argc) {
+            block_index = atoi(argv[++i]) - 1;
+            ind_print_code = 1;
+        } else if (strcmp(argv[i], "--find-block") == 0 && i + 1 < argc) {
+            find_block_search = argv[++i];
             ind_find_block = 1;
-        } else if (!strcmp(argv[i], "--count-blocks")) {
+        } else if (strcmp(argv[i], "--count-blocks") == 0) {
             ind_count_blocks = 1;
         }
     }
 
-    parse_config(); /* *** manual fixup *** */
-
-    if (ind_init) cmpr_init();
-    if (ind_version) { prt("Version: $VERSION$"); flush(); exit(0); }
-    if (ind_help) {
-        prt("Usage: %s [--conf <filepath>] [--print-conf|--help|--init|--version] [(--print-block|--print-code|--print-comment) <index>] [find-block <search>] [--count-blocks]", argv[0]);
-        flush();
-        exit(0);
-    }
-
-    if (ind_print_conf || ind_print_block >= 0 || ind_print_code >= 0 || ind_print_comment >= 0 || ind_find_block || ind_count_blocks) get_code();
-
-    if (ind_print_conf) print_config();
-    if (ind_print_block >= 0) print_block(ind_print_block);
-    if (ind_print_code >= 0) print_code(ind_print_code);
-    if (ind_print_comment >= 0) print_comment(ind_print_comment);
-    if (ind_find_block) {
-        int index = find_block(find_block_search);
-        prt("%d\n", index);
-    }
-    if (ind_count_blocks) {
-        int count = count_blocks();
-        prt("%d\n", count);
-    }
-
-    /* *** manual fixup *** */
-    if (ind_print_conf || ind_print_block > -1 || ind_print_code > -1 || ind_print_comment > -1 || ind_find_block || ind_count_blocks) {
-      flush();
-      exit(0);
+    if (action_arg) {
+        if (ind_conf && ind_init) {
+            prt("Error: --conf and --init cannot be combined.\n");
+            flush_exit(1);
+        }
+        if (ind_help) {
+            prt("Usage: cmpr [--conf <filepath>] [--print-conf|--help|--init|--version] [(--print-block|--print-code|--print-comment) <index>] [find-block <search>] [--count-blocks]\n");
+            flush_exit(0);
+        }
+        if (ind_version) {
+            prt("Version: $VERSION$\n");
+            flush_exit(0);
+        }
+        if (ind_init) {
+            cmpr_init();
+            flush_exit(0);
+        }
+    } else {
+        if (ind_conf) {
+            state->config_file_path = S(conf_filepath);
+        }
+        parse_config();
+        if (ind_print_conf) {
+            print_config();
+            flush_exit(0);
+        }
+        if (ind_print_block + ind_print_comment + ind_print_code + ind_find_block + ind_count_blocks > 1) {
+            prt("Error: --print-block, --print-comment, --print-code, --find-block, and --count-blocks cannot be combined.\n");
+            flush_exit(1);
+        }
+        get_code();
+        if (ind_print_block) {
+            print_block(block_index);
+            flush_exit(0);
+        } else if (ind_print_comment) {
+            print_comment(block_index);
+            flush_exit(0);
+        } else if (ind_print_code) {
+            print_code(block_index);
+            flush_exit(0);
+        } else if (ind_find_block) {
+            int index = find_block(S(find_block_search));
+            prt("%d\n", index + 1);
+            flush_exit(0);
+        } else if (ind_count_blocks) {
+            int count = count_blocks();
+            prt("%d\n", count);
+            flush_exit(0);
+        }
     }
 }
 
