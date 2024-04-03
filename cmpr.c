@@ -1239,7 +1239,7 @@ In handle_keystroke, we support the following single-char inputs:
 - u, undo
 - space/b, paginate down or ("back") up within a block
 - B, do a build by running the build command you provide
-- v, sets the marked point to the current index, switching to "visual" selection mode, or leaves visual mode if in it (currently commented out)
+IGNORE: - v, sets the marked point to the current index, switching to "visual" selection mode, or leaves visual mode if in it
 - /, switches to search mode
 - :, switches to ex command line
 - n/N, repeat search in forward/backward direction
