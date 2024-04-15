@@ -1,4 +1,4 @@
-/* cmpr design
+/* cmpr design ideas / plans
 
 Files and blocks
 ----
@@ -509,36 +509,6 @@ typedef uint64_t u64;
 #define flush_exit(n) flush(); exit(n)
 
 /*
-The next block was written from the following prompt:
-
-What is the best way of handling HTTP requests in C with minimal dependencies, preferring libraries likely to already be installed on Debian GNU/Linux. Answer in the form of a function named http_GET taking an http_request argument req and a http_response argument res.
-In fact, do not write the function, but write a comment that belongs above this function.
-
-Your reply is a C block comment beginning with slash star newline and ending with star slash newline.
-Your comment goes between these lines and should at no point be indented, unless the content of the comment itself calls for it.
-Your comment should suggest libcurl and be reasonably complete in specifying the function implementation step by step.
-
-The output:
-
-```c
-This function, http_GET, is designed to handle HTTP GET requests in C with a focus on simplicity and minimal dependencies. It uses libcurl, a widely-supported and versatile library for transferring data with URLs, which is likely to be pre-installed or easily available on Debian GNU/Linux systems. The function takes two arguments: an http_request struct named req containing the URL and any necessary headers, and an http_response struct named res for storing the response data and response code.
-
-Implementation steps:
-1. Initialize a CURL handle using curl_easy_init().
-2. Set the URL for the request using curl_easy_setopt(), passing the CURL handle and the URL from req.
-3. If there are custom headers, create a curl_slist of these headers and set it with curl_easy_setopt() using the CURLOPT_HTTPHEADER option.
-4. Define a callback function to handle the response data. Use curl_easy_setopt() to set this callback with CURLOPT_WRITEFUNCTION, and set a pointer to your data structure (e.g., part of res) with CURLOPT_WRITEDATA to store the received data.
-5. Perform the HTTP GET request using curl_easy_perform(). Check the result for errors.
-6. Retrieve the HTTP response code using curl_easy_getinfo() with the CURLINFO_RESPONSE_CODE option and store it in res.
-7. Clean up by releasing the CURL handle with curl_easy_cleanup() and freeing any dynamically allocated resources, such as the headers list.
-
-This approach ensures compatibility, ease of maintenance, and the flexibility to handle various HTTP scenarios with minimal external dependencies.
-```
-
-The block comment markers (4 bytes in total) have been removed.
-The below block is an edited version of this.
-*/
-/*
 We will start with the curl example:
 
 #!/bin/sh
@@ -581,45 +551,6 @@ For 9 completion tokens we multiply by $1.5 then 10e-6.
 So we spent 14 millionths of a dollar on output and 10 millionths on input.
 
 Current pricing is at: https://openai.com/pricing
-*/
-
-/* #http_response
-
-Similar to the above example, we 
-*/
-/* #http_response @http_request
-
-Here we design our HTTP response object.
-
-It is a typedef struct containing:
-
-- http_request req: the request, if any
-- span body: the response body as raw bytes, if any, often pointing into cmp space
-- span headers:
-
-span: 
-
-*/
-/* #http_GET @http_response
-
-This function, http_GET, is designed to construct an HTTP GET request and execute it using curl.
-
-It takes an http_request struct, which is passed by pointer.
-
-It returns an http_response called ret which we initialize to {0} as usual.
-
-We will define a helper function inside so it can access variables in our scope.
-This function will be the callback function for the API call.
-We assume that the API call will return a reasonable number of bytes, so we write into a buffer.
-
-Implementation steps:
-1. Initialize a CURL handle using curl_easy_init() stored on ret.handle.
-2. Set the URL for the request using curl_easy_setopt(), passing the CURL handle and the URL from req.
-3. If there are custom headers, create a curl_slist of these headers and set it with curl_easy_setopt() using the CURLOPT_HTTPHEADER option.
-4. Define a callback function to handle the response data. Use curl_easy_setopt() to set this callback with CURLOPT_WRITEFUNCTION, and set a pointer to your data structure (e.g., part of res) with CURLOPT_WRITEDATA to store the received data.
-5. Perform the HTTP GET request using curl_easy_perform(). Check the result for errors.
-6. Retrieve the HTTP response code using curl_easy_getinfo() with the CURLINFO_RESPONSE_CODE option and store it in res.
-7. Clean up by releasing the CURL handle with curl_easy_cleanup() and freeing any dynamically allocated resources, such as the headers list.
 */
 
 /* #langtable #NaturalLanguageTabularProgramming #replywithok
@@ -762,6 +693,14 @@ typedef struct ui_state {
 } ui_state;
 
 ui_state* state;
+/* _network return type
+*/
+
+typedef struct {
+  int success;
+  span result;
+} network_ret;
+
 /* #all_functions #replywithok
 */
 
@@ -772,6 +711,9 @@ void keyboard_help();
 
 void read_openai_key();
 span gpt35_turbo(json);
+network_ret gpt35_turbo_network(json);
+void store_api_req(span,span);
+void store_api_resp(span,span);
 
 void handle_args(int argc, char **argv);
 
@@ -919,13 +861,14 @@ int main(int argc, char** argv) {
 test_openai
 */
 
+ /*
 void test_openai() {
   prt2cmp();
   json arr = json_a();
   json o = json_o();
-  o = json_o_extend(o, S("role"), json_s(S("user")));
-  o = json_o_extend(o, S("content"), json_s(S("Hello.")));
-  arr = json_a_extend(arr, o);
+  json_o_extend(&o, S("role"), json_s(S("user")));
+  json_o_extend(&o, S("content"), json_s(S("Hello.")));
+  json_a_extend(&arr, o);
   prt2std();
   wrs(arr.s); terpri();
   //flush();exit(0);
@@ -937,6 +880,7 @@ void test_openai() {
   flush();
   exit(0);
 }
+*/
 /*
 Create an object with json_o(), then add key value pairs with json_o_extend().
 Then prt, flush, exit(0).
@@ -1003,7 +947,7 @@ void read_openai_key() {
 }
 /* #gpt35_turbo
 
-Here we talk to the OpenAI API.
+Here we talk to the GPT3.5-turbo model.
 
 The function is called gpt35_turbo since the model param is hardcoded.
 
@@ -1015,16 +959,25 @@ We hardcode the model part of the JSON object as '{"model":"gpt-3.5-turbo","mess
 We then wrs the passed-in messages.s, then prt the closing "}", completing our POST data in cmp space.
 After prt2std we set the return span to point to the new end of cmp, so that our span contains the printed data.
 
-Then we handle the communication with libcurl, using CURLOPT_POSTFIELDSIZE to explicitly set the length of the data we are sending and CURLOPT_POSTFIELDS just gets the span .buf directly (not a null-terminated string).
+Then we call gpt35_turbo_network to handle the HTTP request.
 
-If anything goes wrong we complain and exit the program as usual.
-
-When everything goes well, we return a span containing the contents of the API response.
-For this we use a write_callback which passes a span around as the user data.
-
-Manually fixed.
+We write the request body to disk when sending the request and the response to disk by calling the store_api_{req,resp} functions.
 */
 
+/* #gpt35_turbo_network
+
+This is the network part of gpt35_turbo().
+
+We get a json containing the complete API request and return a successful API response or some error message.
+
+We handle the communication with libcurl, using CURLOPT_POSTFIELDSIZE to explicitly set the length of the data we are sending and CURLOPT_POSTFIELDS just gets the span .buf directly (not a null-terminated string).
+
+Our return value is a network_ret which either has success = 1 and the result contains the body of the API response or success = 0 and the result is a human-readable error message.
+
+To collect the response we use a write_callback which passes a span around as the user data.
+*/
+
+ /*
 size_t write_callback(void *buffer, size_t size, size_t nmemb, void *userp) {
     span *response_span = (span *)userp;
     size_t total = size * nmemb;
@@ -1038,7 +991,7 @@ size_t write_callback(void *buffer, size_t size, size_t nmemb, void *userp) {
     return total;
 }
 
-span gpt35_turbo(json messages) {
+network_ret gpt35_turbo_network(json messages) {
     span post_data, response_span;
     post_data.buf = cmp.end;
 
@@ -1082,7 +1035,7 @@ span gpt35_turbo(json messages) {
     curl_slist_free_all(headers);
     return response_span;
 }
-
+*/
 /*
 Debugging helper
 */
@@ -1506,10 +1459,6 @@ How we handle files and blocks:
 
 - Non-empty files are tiled by blocks and the block location unambiguously identifies the file it is part of.
 - Empty files contain no blocks.
-
-Every file has a start (inclusive) and end (exclusive) block index set on it.
-For empty files these are the same.
-
 */
 /*
 In find_blocks_language_python, we get a span containing a file.
@@ -3422,8 +3371,8 @@ We get a role and a message and we return a json_o that has "role" and "content"
 
 json gpt_message(span role, span message) {
     json resp = json_o();
-    resp = json_o_extend(resp, S("role"), json_s(role));
-    resp = json_o_extend(resp, S("content"), json_s(message));
+    json_o_extend(&resp, S("role"), json_s(role));
+    json_o_extend(&resp, S("content"), json_s(message));
     return resp;
 }
 
@@ -3448,32 +3397,33 @@ Then in any case we send our input prompt as the last user message, and send the
 */
 
 void send_to_llm(span prompt) {
-    if (empty(state->openai_key)) {
+    //if (empty(state->openai_key)) {
         send_to_clipboard(prompt);
-        assert(0);
         return;
-    }
+    //}
 
+        /*
     prt2cmp();
     json messages = json_a();
     int system_index = find_block(S("#systemprompt"));
     if (system_index != -1) {
-        json_a_extend(messages, gpt_message(S("system"), state->blocks.s[system_index]));
+        json_a_extend(&messages, gpt_message(S("system"), state->blocks.s[system_index]));
     }
 
     int bootstrap_index = find_block(S("#bootstrapprompt"));
     if (bootstrap_index != -1) {
-        json_a_extend(messages, gpt_message(S("user"), state->blocks.s[bootstrap_index]));
+        json_a_extend(&messages, gpt_message(S("user"), state->blocks.s[bootstrap_index]));
     }
 
     json x = gpt_message(S("user"), prompt);
-    messages = json_a_extend(messages, x);
+    json_a_extend(&messages, x);
     prt2std();
 
     span result = gpt35_turbo(messages);
     wrs(result);
     flush();
     exit(0);
+    */
 }
 
 /* #block_comment_part

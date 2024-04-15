@@ -49,9 +49,9 @@ You still must flush() before the output will be printed to stdout and be visibl
 - `json_b(int)`: prt a true or false (only 0 is false).
 - `json_0()`: prt a json_null value ("null").
 - `json_o()`: prt an empty json object.
-- `json_o_extend(json,span,json)`: extends $1 with key $2 and value $3.
+- `json_o_extend(json*,span,json)`: extends $1 with key $2 and value $3.
 - `json_a()`: prt an empty json array.
-- `json_a_extend(json,json)`: extends $1 with key $2.
+- `json_a_extend(json*,json)`: extends $1 with key $2.
 - `json_sp(json)`: 1 if $1 is a string (given that it is a json).
 - `json_{s,n,b,0,o,a}p`: full list of json_?p predicate funcs.
 - `json_key(span, json)`: gives a nullable json; object lookup.
@@ -868,8 +868,8 @@ json nulljson();
 
 // extend
 
-json json_o_extend(json,span,json);
-json json_a_extend(json,json);
+void json_o_extend(json*,span,json);
+void json_a_extend(json*,json);
 
 // predicates
 int json_sp(json);
@@ -960,15 +960,14 @@ json json_o() {
   return ret;
 }
 
-json json_o_extend(json j, span key, json val) {
+void json_o_extend(json *j, span key, json val) {
   u8* keybuf = malloc(len(key));
   u8* valbuf = malloc(len(val.s));
   memcpy(keybuf, key.buf, len(key));
   memcpy(valbuf, val.s.buf, len(val.s));
   span key2 = {keybuf, keybuf + len(key)};
   span val2 = {valbuf, valbuf + len(val.s)};
-  json ret = {s: {buf: j.s.buf }};
-  out.end = j.s.end;
+  out.end = j->s.end;
   bksp();
   if (*(out.end - 1) != '{') prt(",");
   //wrs(key2);
@@ -976,10 +975,9 @@ json json_o_extend(json j, span key, json val) {
   prt(":");
   wrs(val2);
   prt("}");
-  ret.s.end = out.end;
+  j->s.end = out.end;
   free(keybuf);
   free(valbuf);
-  return ret;
 }
 
 json json_a() {
@@ -989,15 +987,13 @@ json json_a() {
   return ret;
 }
 
-json json_a_extend(json a, json val) {
-  json ret = {s: {buf: a.s.buf }};
-  out.end = a.s.end;
+void json_a_extend(json *a, json val) {
+  out.end = a->s.end;
   bksp();
   if (*(out.end - 1) != '[') prt(",");
   wrs(val.s);
   prt("]");
-  ret.s.end = out.end;
-  return ret;
+  a->s.end = out.end;
 }
 
 json nulljson() { return (json) {nullspan()}; }
