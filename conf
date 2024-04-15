@@ -11,6 +11,7 @@ language: C
 file: cmpr/conf
 file: cmpr/Makefile
 file: cmpr/README.md
+file: cmpr/DATALOSS.md
 file: cmpr/cmpr.c
 file: cmpr/spanio.c
 file: cmpr/second

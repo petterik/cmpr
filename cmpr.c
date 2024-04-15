@@ -1,28 +1,443 @@
+/* cmpr design
+
+Files and blocks
+----
+
+20240409
+
+Files can be empty, but blocks are never empty, which means an empty file contains no blocks.
+
+We maintain the clean definition of blocks (they are non-empty spans of texts) and we also respect the idea of files.
+
+Therefore, j/k order is a union of the file list and the block list.
+
+We do away with the earlier idea of empty blocks only in empty files.
+
+As an example, if the project contains files a, b, c, and d containing the following blocks:
+
+a: 1 2 3
+b: no blocks
+c: 4 5
+d: 6
+
+In j/k order (formally, just kidding order) we visit three blocks for file a, and the empty file b, and then the fourth block in file c.
+
+Unlike as of v5, we do not count a block index for the empty file b, which means you can add an empty file to your project to record the intention to store some blocks there in the future without changing the number of blocks in your project.
+The language of empty files does not even need to be defined, at least not for ingest.
+Files and blocks are separate lists, but they have a total order.
+
+Now we also say (as of v6, say) that every block has a checksum.
+The checksum isn't guaranteed to stay the same between versions, but the tool should be responsible for updating it, which means at least one overlap between checksum implementations to support version upgrading.
+If the file is very short we may just store the content itself.
+
+For now, we are assuming that the only use we have for the checksums is that we can identify whether a file contents have changed.
+If they have, we can identify changes to individual blocks if the file is divided into blocks.
+However, as the checksum function we are using is of course opaque, we will not be able to measure block similarity, only content-identity, and that only probabilistically.
+
+The concept of empty files also makes vi-like normal mode commands like d, p, o, useful to do things like take a block from an existing file with d and move it into a new file with p, even if that file was empty.
+Obviously this will get more useful when we have actual content-aware hashing.
+
+
+
+
+
+
+
+
+Basic operations
+----
+20240310
+
+The basic operations are all on blocks.
+
+They are:
+
+r/R (currently split into two parts but logically one operation)
+d (not implemented)
+o (not implemented)
+e
+x (not implemented)
+p/P (not implemented)
+
+These are all modifying operations, but we also have:
+
+undo
+redo
+diff
+
+This family of operations change the block contents, but not necessarily to something new.
+Undo is "u" in vim, but redo requires a modifier key.
+I'm not sure if we want to keep these exact keyboard shortcuts, especially as modifier keys are difficult in some environments.
+
+We also need new keys for the inverse operations of "r/R".
+This really needs, to be full-featured, to include getting the full block into the clipboard, getting the comment part or code part, and optionally applying some transformation to either one of these.
+
+An easy DSL to express this is the following:
+
+prompt("writethecode",commentpart(block))
+
+In this idea, block is a local variable, commentpart and prompt are functions, and the string literal "writethecode" is an identifier for a prompt template which in this case takes a single argument.
+
+Arguments to prompts are always positional and can always be empty.
+The prompt "writethecode" might be given on the conf file or could come from a block of prompt templates, or another conf file.
+
+
+
+
+
+
+
+
+
+Implementation plan
+----
+20240310
+
+When we read in data from disk (in get_code) we should also do all indexing operations.
+
+This means we get checksums for all our blocks and all lines.
+
+In particular:
+
+- we make a lines spans which we store on ui_state
+- this will be kept up to date for data that is in memory only
+
+It is intended that the backing file always contains the same lines as we have in inp.
+
+However, as we do not exclusively own the file, we always check it when opening a project and again before writing.
+
+Specifically, when we write, we first copy the file, if it exists, to a .bak copy.
+We read the bytes of this file and compare them with what we have in memory.
+Note that in new_rev we still have the previous contents of the file (since that is where we update file.contents and inp and therefore the block contents as well)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Networking Plan
+----
+
+A revstore:
+
+- stores blocks
+- serves lists of block hashes which it has
+- serves block contents for a given hash when asked
+- only allows known users to write to it
+- may have access controls on who can read from it
+- necessarily has rate limits on all access for all users, even if only those imposed by hardware
+
+Because a revstore is controlled by a certain author, it's a great place to get vetted news, if you trust that author (or curator).
+
+Guiding principle:
+
+Whenever possible, determine everything from the revstore contents itself.
+
+> cmpr --rvs-server
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Outputs
+----
+
+Let's say the filetype is HTML.
+It would be natural to be able to view the output (maybe continuously updated) without having to use the (B)uild command just for that.
+So let's say we have "V" for view, and this could include a 20px fixed header with a history bar.
+The current contents will automatically refresh.
+
+However, we might not want to treat an HTML file (particularly a generated one) as a source of blocks.
+This means if we have Library: we should have View: as well.
+The point is to bring the view into the workflow (for example, as an input to some procedure) but not add blocks.
+Note that you can still edit a file.
+The necessity for View: to open an external browser is a limitation of the terminal interface.
+In particular, it will not play nicely with SSH.
+A :view-url would be a nice way to get a network-friendly https url to fetch HTML from.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Block chains
+----
+
+As a simple example of a more general idea, we propose chains of blocks as an include mechanism.
+
+We have noted that an LLM requires input to be provided in some order.
+
+Therefore each block can strictly speaking only have one block immediately preceding it.
+
+The idea of a block chain is just this: each block may name its immediate predecessor.
+
+The syntax for this can be as follows:
+
+<block-start-token> #name-of-block @predecessor-name
+
+This suggests two basic features:
+
+1. An index of block names to block indices.
+
+2. A transform on blocks that expands references (transitively) and removes references if desired.
+
+The implementation is like this:
+
+expand_blockrefs: Block -> State BlockChain
+expand_blockrefs Complete b := b
+expand_blockrefs Child b := expand_blockrefs (expand_parent b)
+
+Where expand_parent simply concatenates the parent block to the block itself.
+Obviously, expand_blockrefs can be extended to have multiway branching, to intelligently handle cycles, and so on.
+
+This can be seen as a specific case of a more general pattern:
+
+1. look up a block
+2. do something with it
+
+In the case of r/R this is split the comment part, wrap it with a prompt template, send it to an LLM, and replace the remaining suffix of the block with the LLM output.
+There's a human in the loop, which is enhanced if we have both "r" (regenerate) and "u" (undo) in the same UI.
+
+The idea for "r" implementation is that if you turn the API on, it just does it.
+Then you have "u" to go back and perhaps some kind of diff view.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Name spaces
+----
+
+A name space is a list of pairs of checksums and names.
+It is published by a revstore which also hosts blocks having all the given checksums.
+
+There can only be one name for a block in a given namespace.
+
+As an example, I can publish at spanio.cmpr.ai my own namespace for the spanio library.
+
+I can also publish all of the blocks.
+
+Then you can run any of my code by getting an index block from my server, listing the name space, searching the names, and accessing any of interest.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Third half
+----
+
+The third half is the diff layer.
+
+If you have a block and you want a better version of that block, you want to be able to describe the difference in English and have ChatGPT make it happen.
+
+In other words, there are two dimensions:
+
+- block index dimension
+- time dimension
+
+Between any two blocks a, b, there is a diff d(a,b) that represents the change from a to b.
+This can be seen as a delta or a derivative.
+
+A very natural operation is describe_diff(a, b) which is like diff(a, b) but it adds an English explanation.
+
+This can be something like "This fixes a bug in the code by changing a pointer from an incorrect to a correct value" but a more useful description would include variable names and similar detail such that the patch can likely be recreated.
+
+For each block we have at least three neighbors.
+First we have the parent block in time.
+This is whatever it was before you edited it into its current state.
+Unless you just created it and it is still empty (in which case it does not exist since blocks are never empty) then it has some previous state (although that may have been the nonexisting state of the empty block itself...).
+This just means it is the first block in its lineage.
+
+Second we always have some block chain parent.
+This is the pointer to the foundational information on which we depend.
+(The root node by the way could be considered implicitly to point to GPT4 as currently we don't expect it to work on other models without testing.
+This is a way of saying we depend on some knowledge built into the model.)
+This is a temporal relationship loosely speaking, but can be edited easily, e.g. when a bootstrap block gets split into subcomponents.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Implementation plans
+----
+20240310
+
+First we set up the indices: lines, blocks, files.
+
+Then we review this file and work out a plan.
+
+But before any of that, it turns out, we are actually implementing openai-key support.
+
+First we will write a function that just gets the openai-key from a file .cmpr/openai-key which must be owned by the current user and readable only by that user (i.e. chmod 0400).
+
+The end library experience we want should be span result = llm(span).
+
+We want to record all our API inputs and outputs.
+
+Before calling llm() we will call some other setup functions.
+
+So the API we want from the rest of the code is just this:
+
+- setup_llm(): does whatever is required to be able to use the LLM
+- llm(): uses the LLM
+- free_llm(): does whatever cleanup is required
+
+All the specifics of what the LLM is and what these steps are can change by configuration.
+
+One issue is how the data should be sent to the LLM.
+For now since we are supporting OpenAI first we will just send JSON, and we can set our system message and so on.
+
+*/
+
 /*
-Below we have shell functions which we used for building in the first days of the project.
-These can gradually be cleaned up as we implement the functionality directly or in other ways.
-We export these functions into a separate file so that they can be sourced at the shell.
-e.g. `. cmpr/functions.sh` brings the current functions into scope.
-Then we use `build` to do a build, and so on.
+Below we have shell functions which we used for building in the early days of the project.
 
 SH_FN_START
 
 F=cmpr/cmpr.c
 
-prepare_commit() {
-  # the .? on the line below is so this doesn't end a C block comment...
-  awk 'BEGIN {block=0} /^\/\*.?/ {block++; if (block==2) exit} {print}' < cmpr/cmpr.c | tail -n +3 > cmpr/README.md
-  ls -lh cmpr/README.md
-}
-
 export_functions() {
   awk 'BEGIN{EMIT=0} /^SH_FN_END$/{EMIT=0} {if(EMIT)print} /^SH_FN_START$/{EMIT=1}' <"$F" >cmpr/functions.sh;
-}
-
-spanio_pre() {
-  echo "Here's our library code:"
-  echo
-  echo '```c'
 }
 
 spanio_post() {
@@ -43,18 +458,6 @@ spanio_prompt() {
   ( spanio_pre
     awk '/END LIBRARY CODE/ {exit} {print}' "$F"
     spanio_post
-  ) | xclip -i -selection clipboard
-}
-
-code_blocks() {
-  awk '/^\/\*$/ { start = NR; } /^}$/ { if (start != 0) { print start "," NR; start = 0; } }'
-}
-
-code_prompt() {
-  ( echo "Here's our code so far. Reply with \"OK\"."
-    echo '```'
-    awk '/END LIBRARY CODE/,0' "$F" | tail -n +2
-    echo '```'
   ) | xclip -i -selection clipboard
 }
 
@@ -85,11 +488,140 @@ Reply only with code. Do not simplify, but include working code. If necessary, y
 
 */
 
-/* import our library code */
+/* import libraries 
 
+
+An alternate idea here is to let cmpr manage a single .c file with all our dependencies, for example, all header files and all spanio functions, etc.
+This can be a C file to better allow code size optimizations.
+We could have one table where we list all the dependencies.
+*/
+
+#define _GNU_SOURCE // for memmem
+#include "siphash/siphash.h"
 #include "spanio.c"
 
+#include <stdint.h>
+#include <stddef.h>
+#include <curl/curl.h>
+
+typedef uint64_t u64;
+
 #define flush_exit(n) flush(); exit(n)
+
+/*
+The next block was written from the following prompt:
+
+What is the best way of handling HTTP requests in C with minimal dependencies, preferring libraries likely to already be installed on Debian GNU/Linux. Answer in the form of a function named http_GET taking an http_request argument req and a http_response argument res.
+In fact, do not write the function, but write a comment that belongs above this function.
+
+Your reply is a C block comment beginning with slash star newline and ending with star slash newline.
+Your comment goes between these lines and should at no point be indented, unless the content of the comment itself calls for it.
+Your comment should suggest libcurl and be reasonably complete in specifying the function implementation step by step.
+
+The output:
+
+```c
+This function, http_GET, is designed to handle HTTP GET requests in C with a focus on simplicity and minimal dependencies. It uses libcurl, a widely-supported and versatile library for transferring data with URLs, which is likely to be pre-installed or easily available on Debian GNU/Linux systems. The function takes two arguments: an http_request struct named req containing the URL and any necessary headers, and an http_response struct named res for storing the response data and response code.
+
+Implementation steps:
+1. Initialize a CURL handle using curl_easy_init().
+2. Set the URL for the request using curl_easy_setopt(), passing the CURL handle and the URL from req.
+3. If there are custom headers, create a curl_slist of these headers and set it with curl_easy_setopt() using the CURLOPT_HTTPHEADER option.
+4. Define a callback function to handle the response data. Use curl_easy_setopt() to set this callback with CURLOPT_WRITEFUNCTION, and set a pointer to your data structure (e.g., part of res) with CURLOPT_WRITEDATA to store the received data.
+5. Perform the HTTP GET request using curl_easy_perform(). Check the result for errors.
+6. Retrieve the HTTP response code using curl_easy_getinfo() with the CURLINFO_RESPONSE_CODE option and store it in res.
+7. Clean up by releasing the CURL handle with curl_easy_cleanup() and freeing any dynamically allocated resources, such as the headers list.
+
+This approach ensures compatibility, ease of maintenance, and the flexibility to handle various HTTP scenarios with minimal external dependencies.
+```
+
+The block comment markers (4 bytes in total) have been removed.
+The below block is an edited version of this.
+*/
+/*
+We will start with the curl example:
+
+#!/bin/sh
+curl https://api.openai.com/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer $(cat cmpr/openai-key)" -d '{ "model": "gpt-3.5-turbo", "messages": [ { "role": "system", "content": "You are a helpful assistant." }, { "role": "user", "content": "Hello!" } ] }'
+
+The output may look like:
+
+{
+"id": "chatcmpl-9CeJH1n2bKXPsOR1xqWXyPdIXyDVD",
+"object": "chat.completion",
+"created": 1712801915,
+"model": "gpt-3.5-turbo-0125",
+"choices": [
+{
+"index": 0,
+"message": {
+"role": "assistant",
+"content": "Hello! How can I assist you today?"
+},
+"logprobs": null,
+"finish_reason": "stop"
+}
+],
+"usage": {
+"prompt_tokens": 19,
+"completion_tokens": 9,
+"total_tokens": 28
+},
+"system_fingerprint": "fp_b28b39ffa8"
+}
+
+We can record: the request, the response, the estimated cost.
+
+For now we have the following costs for gpt-3.5-turbo-0125 as the model:
+
+gpt-3.5-turbo-0125  $0.50 / 1M tokens $1.50 / 1M tokens
+
+This means for 19 tokens we must multiply by $0.5 then 10e-6.
+For 9 completion tokens we multiply by $1.5 then 10e-6.
+So we spent 14 millionths of a dollar on output and 10 millionths on input.
+
+Current pricing is at: https://openai.com/pricing
+*/
+
+/* #http_response
+
+Similar to the above example, we 
+*/
+/* #http_response @http_request
+
+Here we design our HTTP response object.
+
+It is a typedef struct containing:
+
+- http_request req: the request, if any
+- span body: the response body as raw bytes, if any, often pointing into cmp space
+- span headers:
+
+span: 
+
+*/
+/* #http_GET @http_response
+
+This function, http_GET, is designed to construct an HTTP GET request and execute it using curl.
+
+It takes an http_request struct, which is passed by pointer.
+
+It returns an http_response called ret which we initialize to {0} as usual.
+
+We will define a helper function inside so it can access variables in our scope.
+This function will be the callback function for the API call.
+We assume that the API call will return a reasonable number of bytes, so we write into a buffer.
+
+Implementation steps:
+1. Initialize a CURL handle using curl_easy_init() stored on ret.handle.
+2. Set the URL for the request using curl_easy_setopt(), passing the CURL handle and the URL from req.
+3. If there are custom headers, create a curl_slist of these headers and set it with curl_easy_setopt() using the CURLOPT_HTTPHEADER option.
+4. Define a callback function to handle the response data. Use curl_easy_setopt() to set this callback with CURLOPT_WRITEFUNCTION, and set a pointer to your data structure (e.g., part of res) with CURLOPT_WRITEDATA to store the received data.
+5. Perform the HTTP GET request using curl_easy_perform(). Check the result for errors.
+6. Retrieve the HTTP response code using curl_easy_getinfo() with the CURLINFO_RESPONSE_CODE option and store it in res.
+7. Clean up by releasing the CURL handle with curl_easy_cleanup() and freeing any dynamically allocated resources, such as the headers list.
+*/
+
 /* #langtable #NaturalLanguageTabularProgramming #replywithok
 Here we have a table of languages that we support.
 
@@ -97,43 +629,56 @@ Here we have a table of languages that we support.
 
 1. Supported Language:
 
-C, Python, JavaScript
+C, Python, JavaScript, Markdown
 
 2. Filename extension:
 
 C: .c
 Python: .py
 JavaScript: .js
+Markdown: .md
 
 3. Find blocks implementation:
 
-C: find_blocks_by_type_c
-Python: find_blocks_by_type_python
-JavaScript: find_blocks_by_type_c
+C: find_blocks_language_c
+Python: find_blocks_language_python
+JavaScript: find_blocks_language_c
+Markdown: find_blocks_language_markdown
 
 4. Find blocks description string:
 
 C: Blocks start with a C-style block comment at the beginning of a line (no leading whitespace).
 Python: Blocks start with a triple-quoted string, also at the beginning of a line.
 JavaScript: Uses the same rules as C (block comment flush left starts a block).
+Markdown: Blocks start with a heading of any level.
 
 5. Block comment end description:
 
 C: Comment part ends with a C-style block comment that can end anywhere on a line.
 Python: The triple-quote end also has to be at the start of a line.
 JavaScript: Same as C.
+Markdown: There is no comment part, markdown blocks are often all prose.
 
 6. Default block comment to prompt pattern:
 
 C: "```c\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Do not include comments.\n"
 Python: "```python\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Avoid code_interpreter.\n"
 JavaScript: "```js\n" $COMMENT$ "```\n\nWrite the code. Reply only with code. Do not include comments.\n"
+Markdown: "$COMMENT$"
+
+7. Prompt pattern name:
+
+C: c-comment-2-code
+Python: py-comment-2-code
+JavaScript: js-comment-2-code
+Markdown: md-comment-2-code
+
 */
-/* #config_fields
+/* #config_fields #conftable
 
 We define CONFIG_FIELDS including all our known config settings, as they are used in several places (with X macros).
 
-The known config settings are:
+The config settings are:
 
 - projdir, location of the project directory that we are working with as a span
 - revdir, a span containing a relative or absolute path to where we store our revisions
@@ -161,8 +706,9 @@ We have a projfile type which contains for each file:
 - the path as a span
 - the language, also a span
 - the contents of the file, also a span
+- a checksum of the contents, a u64
 
-Here we have a typedef for the projfile, and we also call our generic macro to make a corresponding array type called projfiles, choosing 256 for the stack size.
+Here we have a typedef for the projfile, and we also call our generic macro MAKE_ARENA to make a corresponding array type called projfiles, choosing 256 for the stack size.
 */
 
 typedef struct {
@@ -176,10 +722,12 @@ MAKE_ARENA(projfile, projfiles, 256)
 
 We define a struct, ui_state, which we can use to store any information about the UI that we can then pass around to various functions as a single entity.
 This includes, so far:
+
 - files, a projfiles array of files in the project
-- the current language, a span, used by the file/language config handler functions
+- current language, a span, used by the file/language config handler functions
 - the blocks, a spans
-- the current_index into them
+- the current_index, the number of blocks prior to the selected one (i.e. zero-indexed)
+- the current_file, the number of files prior to the selected one
 - a marked_index, which represent the "other end" of a selected range
 - the search span which will contain "/" followed by some search if in search mode, otherwise will be empty()
 - the previous search span, used for n/N
@@ -187,10 +735,11 @@ This includes, so far:
 - the config file path as a span
 - terminal_rows and _cols which stores the terminal dimensions
 - scrolled_lines, the number of physical lines that have been scrolled off the screen upwards
+- openai_key, an OpenAI API key, or an empty span
 
 Additionally, we include a span for each of the config files, with an X macro inside the struct, using CONFIG_FIELDS defined above.
 
-Below the ui_state struct/typedef, we declare a global ui_state* state, which will be initialized below in main().
+Below the ui_state struct/typedef, we declare a global ui_state* state, which will be initialized below by main().
 */
 
 typedef struct ui_state {
@@ -206,6 +755,7 @@ typedef struct ui_state {
     int terminal_rows;
     int terminal_cols;
     int scrolled_lines;
+    span openai_key;
     #define X(name) span name;
     CONFIG_FIELDS
     #undef X
@@ -215,71 +765,89 @@ ui_state* state;
 /* #all_functions #replywithok
 */
 
-void print_config();
-void parse_config();
-void cmpr_init();
 void main_loop();
+char getch();
 void handle_keystroke(char);
 void keyboard_help();
+
+void read_openai_key();
+span gpt35_turbo(json);
+
+void handle_args(int argc, char **argv);
+
+// conf stuff
+void check_conf_vars();
+void ensure_conf_var(span*, span, span);
+void print_config();
+void parse_config();
+int add_projfile(span); // helper for check_conf_vars
+
 void reset_stdin_to_terminal();
-void edit_current_block();
-void rewrite_current_block_with_llm();
-void compile();
-void replace_code_clipboard();
+
 void toggle_visual();
 
+// block operations
+void edit_current_block();
+void rewrite_current_block_with_llm();
+json gpt_message(span role, span message);
+void send_to_llm(span prompt);
+void replace_code_clipboard();
+span block_comment_part(span block);
+span comment_to_prompt(span comment);
+void send_to_clipboard(span prompt);
+int file_for_block(span block);
+void replace_block_code_part(span new_code);
+int launch_editor(char* filename);
+void handle_edited_file(char* filename);
+
+span pipe_cmd_cmp(span); // should probably be a library method
+
+void compile();
+
+// search
 void start_search();
 void perform_search();
 void finalize_search();
-
 void search_forward();
 void search_backward();
+int find_block(span);
 
+// ex commands
 void start_ex();
 void handle_ex_command();
-
 void bootstrap();
 void addfile(span);
 void addlib(span);
 void ex_help();
 
-void settings_mode();
-void ensure_conf_var(span*, span, span);
-span block_comment_part(span block);
-void print_block(int);
-void print_comment(int);
-void print_code(int);
-int find_block(span);
-int count_blocks();
-span comment_to_prompt(span comment);
-void send_to_clipboard(span prompt);
-void print_physical_lines(span, int);
-int print_matching_physical_lines(span, span);
+// ingest
+void get_code(); // read and index
+void get_revs();
+spans find_blocks(span);
+spans find_blocks_language(span file, span language);
+void find_blocks_in(span content, span language);
+u64 selected_checksum(span);
+void checksum_blocks();
+
+// pagination and printing
 void page_down();
 void page_up();
+void print_physical_lines(span, int);
+int print_matching_physical_lines(span, span);
 span count_physical_lines(span, int*);
 void print_multiple_partial_blocks(int,int);
 void print_single_block_with_skipping(int,int);
-int add_projfile(span); // helper for check_conf_vars
+
+void cmpr_init(); // handles --init
+
+// supporting functions
+void settings_mode(); // obsolete?
+void print_block(int);
+void print_comment(int);
+void print_code(int);
+int count_blocks();
 char* tmp_filename();
-int launch_editor(char* filename);
-void handle_edited_file(char* filename);
-spans find_blocks(span);
-spans find_blocks_by_type(span file, span language);
-int file_for_block(span block);
-void replace_block_code_part(span new_code);
 void new_rev(char*, int);
-void handle_args(int argc, char **argv);
-void get_code();
-void get_revs();
-void check_conf_vars();
-void rev_decr();
-
-span pipe_cmd_cmp(span); // should probably be a library method
-
-// stubs
-
-void rev_decr() {}
 /* #main
 
 In main,
@@ -288,20 +856,27 @@ First we call init_spans, since all our i/o relies on it.
 
 We call projfiles_arena_alloc near the top and and _free before we exit, with room for 1 << 14 (2^14) elements.
 
-We call span_arena_alloc(), and at the end we call span_arena_free() just for clarity even though it doesn't matter anyway since we're exiting the process.
-We allocate a spans arena of 1 << 20 or a binary million spans.
+We similarly call span_arena_alloc() and span_arena_free() at the end just for clarity even though it doesn't matter anyway since we're exiting the process.
+We allocate a spans arena of 1 << 20, a binary million spans.
 
-Above (in the ui state block), we have declared a global ui_state* called state, which allows us to not pass around the ui_state singleton all over our program.
-After declaring our ui_state variable in main, which we initialize to {0}, we will set this global pointer to it.
+Above (in #ui_state), we have declared a global ui_state* called state, which allows us to not pass around the ui_state singleton all over our program.
+After declaring our ui_state variable in main, which we call stack_state since it's nominally on the stack, being declared in main, and which we initialize to {0}, we then set this global pointer to its address.
+
 We set config_file_path on the state to the default configuration file path which is ".cmpr/conf", i.e. always relative to the CWD.
+This is important because in handle_args we will already want to either print the args in the default file, or otherwise in a non-standard file location, so this is really where we set the default configuration.
+
 We projfiles_alloc room for 1024 files on the state, and set the ".n" to zero, so we can use the _push() pattern.
+(Discursion:
+The alloc pattern normally returns a full array with n already set to the required size, and it is usually filled in a loop.
+This may turn out to be a design mistake but we're sticking with it for now.
+Anyway, this is why we have to set .n to 0 here.)
 
 We call a function handle_args to handle argc and argv.
 This function will also read our config file (if any).
-We call check_conf_vars() once after this; we also call it in the main loop but we need it before trying to get the code.
+We call check_conf_vars() once after this; we will also call it in the main loop but we need it before trying to get the code.
 
 Next we call a function get_code().
-This function either handles reading standard input or if we are in "project directory" mode then it reads the files indicated by our config file.
+This function either handles reading standard input or it reads the files indicated by our config file.
 In either case, once this returns, inp is populated and any other initial code indexing work is done.
 
 Next we call get_revs(), which handles reading and indexing all of our revisions (in revdir).
@@ -309,7 +884,11 @@ Next we call get_revs(), which handles reading and indexing all of our revisions
 Then we call main_loop().
 
 The main loop reads input in a loop and probably won't return, but just in case, we always call flush() before we return so that our buffered output from prt and friends will be flushed to stdout.
+
+This also just gets us into the habit of calling flush() everywhere, which is pretty much necessary since we always care about precisely when our output becomes visible.
 */
+
+void test_openai();
 
 int main(int argc, char** argv) {
     init_spans();
@@ -322,15 +901,186 @@ int main(int argc, char** argv) {
     state->files = projfiles_alloc(1024);
     state->files.n = 0;
 
+    //read_openai_key();
+
     handle_args(argc, argv);
     check_conf_vars();
     get_code();
+    //test_openai();
     main_loop();
 
     flush();
     projfiles_arena_free();
     span_arena_free();
     return 0;
+}
+
+/*
+test_openai
+*/
+
+void test_openai() {
+  prt2cmp();
+  json arr = json_a();
+  json o = json_o();
+  o = json_o_extend(o, S("role"), json_s(S("user")));
+  o = json_o_extend(o, S("content"), json_s(S("Hello.")));
+  arr = json_a_extend(arr, o);
+  prt2std();
+  wrs(arr.s); terpri();
+  //flush();exit(0);
+
+  span reply = gpt35_turbo(arr);
+  wrs(reply);
+
+  terpri();
+  flush();
+  exit(0);
+}
+/*
+Create an object with json_o(), then add key value pairs with json_o_extend().
+Then prt, flush, exit(0).
+
+void test_json() {
+    json j = json_o();
+    json j2 = json_s(S("role"));
+    json j3 = json_s(S("user"));
+    j = json_o_extend(j, j2, j3);
+    json j4 = json_s(S("content")), j5 = json_s(S("Hello!"));
+    j = json_o_extend(j, j4, j5);
+    terpri();
+    wrs(j.s);
+    terpri();
+    flush();
+    sleep(1);
+    exit(0);
+}
+*/
+
+/* #read_openai_key
+
+In this function, we check that the file .cmpr/openai-key exists and has the correct permissions.
+
+Specifically, it should have read permissions only for the owner, which must be the current user.
+
+We use null-terminated strings and standard C library functions for all of this.
+
+We then extend cmp.end to fit the file contents, and read the file contents into that space.
+
+We set state.openai_key to point to the file contents.
+
+However, we actually want to trim whitespace (such as a newline that must end the file) in case we print the key as a string (such as in an HTTP header), so we call trim() on it.
+*/
+
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+
+void read_openai_key() {
+    const char* key_path = ".cmpr/openai-key";
+    struct stat st;
+
+    if (stat(key_path, &st) == -1 || st.st_mode != (S_IRUSR | S_IFREG) || st.st_uid != getuid()) {
+        exit_with_error("Invalid file permissions or file does not exist");
+    }
+
+    int fd = open(key_path, O_RDONLY);
+    if (fd == -1) {
+        exit_with_error("Failed to open key file");
+    }
+
+    span key_span = {cmp.end, cmp.end + st.st_size};
+    if (read(fd, cmp.end, st.st_size) != st.st_size) {
+        close(fd);
+        exit_with_error("Failed to read key file");
+    }
+    close(fd);
+    cmp.end += st.st_size;
+
+    state->openai_key = trim(key_span);
+}
+/* #gpt35_turbo
+
+Here we talk to the OpenAI API.
+
+The function is called gpt35_turbo since the model param is hardcoded.
+
+We are given a json (the type) which contains an array of messages, and return a span containing the content of the API response.
+
+First we set up a span for the POST data with .buf pointing at cmp.end.
+We call prt2cmp(), and at the end, prt2std().
+We hardcode the model part of the JSON object as '{"model":"gpt-3.5-turbo","messages":', which we prt.
+We then wrs the passed-in messages.s, then prt the closing "}", completing our POST data in cmp space.
+After prt2std we set the return span to point to the new end of cmp, so that our span contains the printed data.
+
+Then we handle the communication with libcurl, using CURLOPT_POSTFIELDSIZE to explicitly set the length of the data we are sending and CURLOPT_POSTFIELDS just gets the span .buf directly (not a null-terminated string).
+
+If anything goes wrong we complain and exit the program as usual.
+
+When everything goes well, we return a span containing the contents of the API response.
+For this we use a write_callback which passes a span around as the user data.
+
+Manually fixed.
+*/
+
+size_t write_callback(void *buffer, size_t size, size_t nmemb, void *userp) {
+    span *response_span = (span *)userp;
+    size_t total = size * nmemb;
+    if (response_span->end + total > cmp_space + BUF_SZ) {
+        prt("overflow\n");
+        flush();
+        exit(1);
+    }
+    memcpy(response_span->end, buffer, total);
+    response_span->end += total;
+    return total;
+}
+
+span gpt35_turbo(json messages) {
+    span post_data, response_span;
+    post_data.buf = cmp.end;
+
+    prt2cmp();
+    prt("{\"model\":\"gpt-3.5-turbo\",\"messages\":");
+    wrs(messages.s);
+    prt("}");
+    prt2std();
+    post_data.end = cmp.end;
+
+    response_span = (span) { cmp.end, cmp.end };
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        prt("Failed to initialize curl");
+        flush();
+        exit(EXIT_FAILURE);
+    }
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    char auth_header[256];
+    sprintf(auth_header, "Authorization: Bearer %.*s", len(state->openai_key), state->openai_key.buf);
+    headers = curl_slist_append(headers, auth_header);
+
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.openai.com/v1/chat/completions");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len(post_data));
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.buf);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_span);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        prt("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        flush();
+        exit(EXIT_FAILURE);
+    }
+
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    return response_span;
 }
 
 /*
@@ -365,6 +1115,7 @@ Command argument and flag table:
 --print-code <index>
 --find-block <search>
 --count-blocks
+--checkout <url>
 
 2. Behavior of arguments and flags:
 
@@ -385,6 +1136,9 @@ version:
 
 print-{block,comment,code}:
   Print the revelant part (or whole) of the block given by the one-based index.
+
+checkout:
+  Get a current copy of a git repo (or other inferred repo type) in the most reasonable way possible, failing if it is not well-known; for example, cmpr --checkout jquery would succeed while xyzzy should not as it is not unambiguously pointing to a single project; if you want this to be consistent, you should include a year tag as a modifier of the project name.
 
 3. Implementation notes:
 
@@ -413,6 +1167,9 @@ print-{code,comment,block}, count-blocks, find-block:
   all of these require the code be loaded, which normally happens after we are called
   so if any of these flags are used we call get_code() first, then we call the appropriate function, then flush and exit successfully
   we always use one-based indexes for anything user-visible, so we must add or subtract one when calling our functions (find_block, print_block, print_comment, print_code)
+
+checkout:
+  we haven't implemented this feature yet, but the idea is that we will call a service on our name resolver; our service will return the jquery location on github which it has previously learned from chatgpt, and it will return a new one after a delay if it has never been cached on the server before; if we can't be sure about it, or we don't understand the license as clearly allowing us to host it, then we skip it
 
 4. Help strings:
 
@@ -629,7 +1386,7 @@ In find_all_blocks, we find the blocks in each file.
 We are going to need to know how many blocks there are in all the files, and to store all of the blocks so that we can allocate a single spans to hold all of them at the end.
 Therefore we first allocate an array of the `spans` type, one per file.
 
-Then for each of the projfiles, we call find_blocks_by_type() to find the blocks in that file (by language, actually, the second argument to this function), and stash those temporarily on our array.
+Then for each of the projfiles, we call find_blocks_language() to find the blocks in that file (by language, actually, the second argument to this function), and stash those temporarily on our array.
 We also call block_sanity_check on the returned blocks for each file.
 
 Once we have all of the blocks for each of the files, we then can construct a new spans (using spans_alloc) of the right size, and we can copy all the blocks into this, which we store on the state.
@@ -645,7 +1402,7 @@ void find_all_blocks() {
 
     size_t total_blocks = 0;
     for (int i = 0; i < state->files.n; ++i) {
-        file_blocks[i] = find_blocks_by_type(state->files.a[i].contents, state->files.a[i].language);
+        file_blocks[i] = find_blocks_language(state->files.a[i].contents, state->files.a[i].language);
         block_sanity_check(state->files.a[i].contents, file_blocks[i]);
         total_blocks += file_blocks[i].n;
     }
@@ -661,6 +1418,62 @@ void find_all_blocks() {
     state->blocks = all_blocks;
     free(file_blocks);
 }
+
+/* #selected_checksum
+
+The currently selected checksum function is siphash, which we wrap here.
+
+This is the function we are calling:
+
+    Computes a SipHash value
+    *in: pointer to input data (read-only)
+    inlen: input data length in bytes (any size_t value)
+    *k: pointer to the key data (read-only), must be 16 bytes 
+    *out: pointer to output data (write-only), outlen bytes must be allocated
+    outlen: length of the output in bytes, must be 8 or 16
+int siphash(const void *in, const size_t inlen, const void *k, uint8_t *out,
+            const size_t outlen);
+
+Our input is a span, the in and inlen args to siphash are determined by the input span.
+
+We use static buffers local to the function for the key (which is 16 bytes, given below) and the out buffer, which is 8 bytes.
+
+The key is "ABCDEFGHIJKLMNOP".
+
+Our output is an unsigned int.
+We pass a pointer to this int into siphash.
+*/
+
+u64 selected_checksum(span input) {
+    static const char key[16] = "ABCDEFGHIJKLMNOP";
+    u64 result;
+    siphash(input.buf, len(input), key, (uint8_t*)&result, sizeof(result));
+    return result;
+}
+
+/* #checksum_blocks
+
+Here we iterate over all the blocks and find a checksum for each one.
+
+We run the checksum on each block by calling selected_checksum on each span and printing the results with prt.
+
+Print the block index (with one added as we always use one-indexed block numbers externally) followed by the 64-bit checksum in hex (with uppercase A-F).
+
+We prompt the user to hit any key, then flush and getch() so the output can be read before we return (and the main loop refreshes the display).
+*/
+
+void checksum_blocks() {
+    /*
+    for (int i = 0; i < state->blocks.n; i++) {
+        long checksum = selected_checksum(state->blocks.s[i]);
+        prt("%d %lX\n", i + 1, checksum);
+    }
+    prt("Press any key to continue...");
+    flush();
+    getch();
+    */
+}
+
 /* #get_code
 
 In get_code, we get the code into the input buffer.
@@ -671,6 +1484,8 @@ For each of the projfiles:
 - we store the contents on the projfile
 
 Then we call find_all_blocks(), which sets up the blocks according to each file's contents and language.
+
+We call checksum_blocks() which additionally checksums each block.
 */
 
 void get_code() {
@@ -680,14 +1495,24 @@ void get_code() {
     }
 
     find_all_blocks();
+    checksum_blocks();
 }
 
 /* #get_revs
-*/
 
-void get_revs() {}
+Not implemented yet.
+
+How we handle files and blocks:
+
+- Non-empty files are tiled by blocks and the block location unambiguously identifies the file it is part of.
+- Empty files contain no blocks.
+
+Every file has a start (inclusive) and end (exclusive) block index set on it.
+For empty files these are the same.
+
+*/
 /*
-In find_blocks_by_type_python, we get a span containing a file.
+In find_blocks_language_python, we get a span containing a file.
 
 We write two loops.
 In the first one we count the blocks, then we spans_alloc our return value with the correct number, and in the second loop we assign the spans.
@@ -723,7 +1548,7 @@ For every other block, .buf is equal to the .end of the previous.
 If this sanity check fails, we complain and crash as usual (prt, flush, exit).
 */
 
-spans find_blocks_by_type_python(span file) {
+spans find_blocks_language_python(span file) {
     int block_count = 0;
     span copy = file;
     span line;
@@ -786,7 +1611,7 @@ spans find_blocks_by_type_python(span file) {
 }
 
 /*
-In find_blocks_by_type_c, we get a span containing a file.
+In find_blocks_language_c, we get a span containing a file.
 
 We write two loops.
 In the first one we count the blocks, then we spans_alloc our return value with the correct number, and in the second loop we assign the spans.
@@ -815,7 +1640,7 @@ The block-finding loop:
 (To determine if we are at the start of the input, we can compare .buf of the line with that of the input.)
 */
 
-spans find_blocks_by_type_c(span file) {
+spans find_blocks_language_c(span file) {
     if (empty(file)) {
         // Handle special case for empty file
         spans single_empty_block = spans_alloc(1);
@@ -862,7 +1687,7 @@ spans find_blocks_by_type_c(span file) {
     return blocks;
 }
 /*
-In `spans find_blocks_by_type(span,span)`, we take a span (a file's contents) and a language, which is any of the supported languages.
+In `spans find_blocks_language(span,span)`, we take a span (a file's contents) and a language, which is any of the supported languages.
 
 We dispatch to another function that handles that language appropriately, and return the resulting spans.
 
@@ -871,13 +1696,13 @@ We dispatch according to the "find blocks by language" implementation given by #
 If the language is not known, we prt, flush, exit as per usual.
 */
 
-spans find_blocks_by_type(span file, span language) {
+spans find_blocks_language(span file, span language) {
     if (span_eq(language, S("C"))) {
-        return find_blocks_by_type_c(file);
+        return find_blocks_language_c(file);
     } else if (span_eq(language, S("Python"))) {
-        return find_blocks_by_type_python(file);
+        return find_blocks_language_python(file);
     } else if (span_eq(language, S("JavaScript"))) {
-        return find_blocks_by_type_c(file); // JavaScript uses the same rule as C for finding blocks.
+        return find_blocks_language_c(file); // JavaScript uses the same rule as C for finding blocks.
     } else {
         prt("Error: Unsupported language '%.*s'.\n", len(language), language.buf);
         flush();
@@ -1236,7 +2061,7 @@ In handle_keystroke, we support the following single-char inputs:
 - e, Edit the current block in $EDITOR (or vi by default)
 - r, Request an LLM rewrite the code part of the block based on the comment part; silently updates clipboard
 - R, kin to "r", which reads current clipboard contents back into the block, replacing the code part
-- u, undo
+IGNORE: - u, undo
 - space/b, paginate down or ("back") up within a block
 - B, do a build by running the build command you provide
 IGNORE: - v, sets the marked point to the current index, switching to "visual" selection mode, or leaves visual mode if in it
@@ -1252,11 +2077,10 @@ We call terpri() on the first line of this function (just to separate output fro
 Implemented inline: j,k,g,G,q
 All others call helper functions already declared, e.g.:
 B -> compile()
-u -> rev_decr()
 R -> replace_code_clipboard()
 ? -> keyboard_help()
 
-Any of j,k,g,G that change the current_index must also reset pagination (scrolled_lines -> 0).
+Any of j,k,g,G,n,N that change the current_index must also reset pagination (scrolled_lines -> 0).
 */
 
 void handle_keystroke(char input) {
@@ -1292,7 +2116,7 @@ void handle_keystroke(char input) {
             replace_code_clipboard();
             break;
         case 'u':
-            rev_decr();
+            //rev_decr();
             break;
         case ' ':
             page_down();
@@ -1314,9 +2138,11 @@ void handle_keystroke(char input) {
             break;
         case 'n':
             search_forward();
+            state->scrolled_lines = 0;
             break;
         case 'N':
             search_backward();
+            state->scrolled_lines = 0;
             break;
         case 'S':
             settings_mode();
@@ -2557,12 +3383,7 @@ SH_FN_END
 Here we call a helper function with the block contents which returns the top part of the block, which is usually a comment, stripping the rest which is usually code.
 It calls another function to turn this comment part into a prompt.
 
-We then call another function which writes that span into a file and calls a user-provided command that places the contents of that file on the clipboard.
-
-Helper functions:
-span block_comment_part(span);
-span comment_to_prompt(span);
-void send_to_clipboard(span);
+We then call send_to_llm, (which can be configured to either use the clipboard or an API).
 */
 
 void rewrite_current_block_with_llm() {
@@ -2590,7 +3411,69 @@ void rewrite_current_block_with_llm() {
   }
 
   // Send the prompt to the clipboard
-  send_to_clipboard(prompt);
+  send_to_llm(prompt);
+}
+
+/* #gpt_message
+
+We get a role and a message and we return a json_o that has "role" and "content" properties.
+
+*/
+
+json gpt_message(span role, span message) {
+    json resp = json_o();
+    resp = json_o_extend(resp, S("role"), json_s(role));
+    resp = json_o_extend(resp, S("content"), json_s(message));
+    return resp;
+}
+
+/* #send_to_llm
+
+Here we're given a prompt to send to the LLM.
+We'll check if openai_key is set on state.
+If it is empty then we just call send_to_clipboard, and we are done.
+(Later we'll have some other config method probably.)
+
+Otherwise we use the API.
+In this case we build a json array and extend it with objects.
+Each one has a role (either user or system) and a content.
+
+If there is a block that contains "#systemprompt", then we will send that as the first message.
+
+If there is a block that contains "#bootstrapprompt", we will send that as the first user message.
+
+To look up the blocks we use find_block() and state->blocks.
+
+Then in any case we send our input prompt as the last user message, and send the whole messages array to the api with gpt35_turbo().
+*/
+
+void send_to_llm(span prompt) {
+    if (empty(state->openai_key)) {
+        send_to_clipboard(prompt);
+        assert(0);
+        return;
+    }
+
+    prt2cmp();
+    json messages = json_a();
+    int system_index = find_block(S("#systemprompt"));
+    if (system_index != -1) {
+        json_a_extend(messages, gpt_message(S("system"), state->blocks.s[system_index]));
+    }
+
+    int bootstrap_index = find_block(S("#bootstrapprompt"));
+    if (bootstrap_index != -1) {
+        json_a_extend(messages, gpt_message(S("user"), state->blocks.s[bootstrap_index]));
+    }
+
+    json x = gpt_message(S("user"), prompt);
+    messages = json_a_extend(messages, x);
+    prt2std();
+
+    span result = gpt35_turbo(messages);
+    wrs(result);
+    flush();
+    exit(0);
 }
 
 /* #block_comment_part
@@ -2980,4 +3863,3 @@ void cmpr_init() {
         fclose(file);
     }
 }
-

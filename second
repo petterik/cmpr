@@ -2424,7 +2424,6 @@ So that's great and all, but it's too much for a human to conveniently read.
 
 As a human what I would do next is start looking at main, and trace the dependencies from there.
 
-So we have two directions:
-
+So we have two directions: one is from the top of the file down, which we can roughly fix up as a dependency tree with the root at the bottom, the other is from the main function up, along all the call edges until we are satisfied that we understand enough.
 
 */
