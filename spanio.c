@@ -16,7 +16,8 @@ You still must flush() before the output will be printed to stdout and be visibl
 - `sp()`: Appends a space character to the output span, i.e. prints a space.
 - `terpri()`: Appends a newline character to the output span.
 - `flush()`, `flush_err()`, `flush_to(char*)`: Flushes the output span to standard output, standard error, or a specified file.
-- `write_to_file(span, const char*)`: Writes the contents of a span to a specified file.
+- `write_to_file_span(span content, span path, int clobber)`: Write a span to a file, optionally overwriting.
+- `write_to_file(span, const char*)`: Deprecated.
 - `read_file_into_span(char*, span)`: Reads the contents of a file into a span.
 - `read_file_S_into_span(span, span)`: Ibid, but taking the filename as a span.
 - `read_file_into_cmp(span)`: Filename as a span, returns contents as a span inside cmp space.
@@ -56,7 +57,7 @@ You still must flush() before the output will be printed to stdout and be visibl
 - `json_{s,n,b,0,o,a}p`: full list of json_?p predicate funcs.
 - `json_key(span, json)`: gives a nullable json; object lookup.
 - `json_index(int, json)`: gives a nullable json; array lookup.
-- `parse_json(span)`: parse a span into a json and return it; may be shorter only by trimmed whitespace.
+- `json_parse(span)`: parse a span into a json and return it; may be shorter only by trimmed whitespace.
 - `make_json(span)`: return a json wrapper of the span in O(1).
 - note that all the json functions either return the json type (which they also prt, usually this is sent to cmp space) as in the _{s,n,b,0,o,a} constructors, or they return 0 or 1, or they return a nullable json (null representation: just a json containing the null span).
 - all the json constructor functions trim whitespace, and all the predicate functions follow a pointer and examine one byte.
@@ -100,7 +101,7 @@ We never use printf, but always prt.
 A common idiom when reporting errors is to call prt, flush, and exit.
 We could also use flush, prt, flush_err, exit, but up to now we've been lazy about the distinction between stdout and stderr as we have mainly interactive use cases.
 
-To prt a span we use `%.*s` with len.
+To prt a span x we use `%.*s` with len(x) and x.buf.
 
 A common idiom is next_line() in a loop with !empty().
 
@@ -866,8 +867,10 @@ json json_o();
 json json_a();
 json nulljson();
 
-// extend
+// inverse
+span json_s2s(json,span*,u8*);
 
+// extend
 void json_o_extend(json*,span,json);
 void json_a_extend(json*,json);
 
@@ -884,14 +887,12 @@ json json_key(span, json);
 json json_index(int, json);
 
 // from spans
-json parse_json(span);
+json json_parse(span);
 json make_json(span);
-json parse_json_prefix(span*);
-json parse_json_prefix_string(span*);
-json parse_json_prefix_number(span*);
-json parse_json_prefix_littok(span*);
-
-
+json json_parse_prefix(span*);
+json json_parse_prefix_string(span*);
+json json_parse_prefix_number(span*);
+json json_parse_prefix_littok(span*);
 
 // implementation
 
@@ -1026,41 +1027,47 @@ int json_ap(json j) { return j.s.buf && *j.s.buf == '['; }
 json json_index(int n, json a) {
   json ret = {0};
   a.s.buf++;
-  while (n--) {
+  while (*a.s.buf != ']') {
     skip_whitespace(&a.s);
-    ret = parse_json_prefix(&a.s);
+    ret = json_parse_prefix(&a.s);
     if (json_is_null(ret)) return nulljson();
+    if (!n--) return ret;
     skip_whitespace(&a.s);
     if (*a.s.buf != ',') return nulljson();
     a.s.buf++;
-  }
-  return ret;
+  };
+  return nulljson();
 }
 
 json json_key(span s, json o) {
   o.s.buf++;
   while (*o.s.buf != '}') {
     skip_whitespace(&o.s);
-    json key = parse_json_prefix(&o.s);
+    json key = json_parse_prefix(&o.s);
     if (json_is_null(key)) return key;
     skip_whitespace(&o.s);
-    if (*o.s.buf++ != ':') return nulljson();
-    json value = parse_json_prefix(&o.s);
-    if (value.s.buf == 0) return nulljson();
-    if (span_eq(key.s, s)) return value;
+    if (*(o.s.buf++) != ':') return nulljson();
+    skip_whitespace(&o.s);
+    json value = json_parse_prefix(&o.s);
+    if (json_is_null(value)) return nulljson();
+    span key_s = json_s2s(key, &cmp, cmp_space + BUF_SZ);
+    if (span_eq(key_s, s)) return value;
+    skip_whitespace(&o.s);
+    if (*(o.s.buf++) != ',') return nulljson();
+    skip_whitespace(&o.s);
   }
 }
 
 json make_json(span s) { return (json){s}; }
 
 /*
-parse_json returns a json if the span contains valid JSON with whitespace stripped
+json_parse returns a json if the span contains valid JSON with whitespace stripped
 otherwise it returns a null json
 
 ChatGPT4's idea, but see next block:
 
 1. **Function Prototype**:
-   The `parse_json` function will take a `span` representing the JSON data and will return a `json` type object. The exact structure of `json` isn't defined here, so I'll assume a generic structure that can handle JSON primitives (strings, numbers, booleans, null) and structures (arrays, objects).
+   The `json_parse` function will take a `span` representing the JSON data and will return a `json` type object. The exact structure of `json` isn't defined here, so I'll assume a generic structure that can handle JSON primitives (strings, numbers, booleans, null) and structures (arrays, objects).
 
 2. **Error Handling**:
    Given the lack of exceptions in C, error handling should be robust, returning a nullable `json` (possibly `nullspan()` to indicate parsing failure). This will allow us to handle malformed input gracefully.
@@ -1092,7 +1099,7 @@ ChatGPT4's idea, but see next block:
 Here’s a skeletal structure for the function:
 
 ```c
-json parse_json(span input) {
+json json_parse(span input) {
     trim(input);  // Remove leading/trailing whitespace
     if (empty(input)) {
         return nullspan();  // Return null json for empty input
@@ -1122,18 +1129,18 @@ json parse_json(span input) {
 ```
 */
 /*
-The `parse_json` function takes a `span` representing the JSON data and returns a `json` type object, unless the parse failed or did not consume the entire input (excepting whitespace) in which case it returns nulljson().
+The `json_parse` function takes a `span` representing the JSON data and returns a `json` type object, unless the parse failed or did not consume the entire input (excepting whitespace) in which case it returns nulljson().
 */
 
-json parse_json(span s) {
+json json_parse(span s) {
   skip_whitespace(&s);
-  json ret = parse_json_prefix(&s);
+  json ret = json_parse_prefix(&s);
   skip_whitespace(&s);
   if (empty(s)) return ret;
   return nulljson();
 }
 /*
-The parse_json_prefix function takes a span and parses as much of it as it can as a json, then leaves the rest, and returns a json which is null only if the parse failed.
+The json_parse_prefix function takes a span and parses as much of it as it can as a json, then leaves the rest, and returns a json which is null only if the parse failed.
 
 In fact, the span is passed in by reference and we modify it, shortening it from the front.
 If the parse fails the input span may be modified.
@@ -1148,14 +1155,14 @@ I.e. the json that we return always covers the prefix that we have parsed up to 
 
 Then we switch on the first non-ws char of the input, and then we either:
 
-- call parse_json_prefix_string
-- call parse_json_prefix_number
+- call json_parse_prefix_string
+- call json_parse_prefix_number
 - directly parse a true/false/null
 - directly parse an object or array
 
-To directly parse an object, we first consume the "{", then call parse_json_prefix_string.
+To directly parse an object, we first consume the "{", then call json_parse_prefix_string.
 If this returns a null json it means we failed and we return the null json.
-Otherwise we continue by skipping whitespace, consuming the ":" and then recursively calling parse_json_prefix to consume the value.
+Otherwise we continue by skipping whitespace, consuming the ":" and then recursively calling json_parse_prefix to consume the value.
 Once again, if the value is the null json then we failed and return the null json.
 Otherwise, we consume (whitespace and) either another comma, going around the loop again, we exit the loop, and then outside that consume (any whitespace and) the final "}" and return successfully.
 
@@ -1166,7 +1173,7 @@ This returns a span, which we put in a variable; if it is the null span we retur
 Otherwise, it will be a span pointing into the span that we are parsing, for this reason we return the same span returned from consume_prefix, just wrapping it with a call to make_json first.
 */
 
-json parse_json_prefix(span *input) {
+json json_parse_prefix(span *input) {
     json ret = {0};
     //skip_whitespace(input);
     ret.s.buf = input->buf;
@@ -1174,28 +1181,28 @@ json parse_json_prefix(span *input) {
     char first_char = *input->buf;
     switch (first_char) {
         case '\"':
-            ret = parse_json_prefix_string(input);
+            ret = json_parse_prefix_string(input);
             break;
         case '-':
         case '0' ... '9':
-            ret = parse_json_prefix_number(input);
+            ret = json_parse_prefix_number(input);
             break;
         case 't':
         case 'f':
         case 'n':
-            ret = parse_json_prefix_littok(input);
+            ret = json_parse_prefix_littok(input);
             break;
         case '{':
             input->buf++; // consume '{'
             skip_whitespace(input);
             while (*input->buf != '}') {
-                json key = parse_json_prefix_string(input);
+                json key = json_parse_prefix_string(input);
                 if (key.s.buf == NULL) return nulljson();
                 skip_whitespace(input);
                 if (*input->buf != ':') return nulljson();
                 input->buf++; // consume ':'
                 skip_whitespace(input);
-                json value = parse_json_prefix(input);
+                json value = json_parse_prefix(input);
                 if (value.s.buf == NULL) return nulljson();
                 skip_whitespace(input);
                 if (*input->buf == ',') input->buf++; // consume ','
@@ -1208,7 +1215,7 @@ json parse_json_prefix(span *input) {
             input->buf++; // consume '['
             skip_whitespace(input);
             while (*input->buf != ']') {
-                json value = parse_json_prefix(input);
+                json value = json_parse_prefix(input);
                 if (value.s.buf == NULL) return nulljson();
                 skip_whitespace(input);
                 if (*input->buf == ',') input->buf++; // consume ','
@@ -1225,7 +1232,111 @@ json parse_json_prefix(span *input) {
 }
 
 /*
-In parse_json_prefix_string we consume a JSON string from the input span and wrap it as a json.
+
+In json_s2s we get a json with .s being a JSON string, and a span pointer to a buffer area, which we will extend, and a max u8* giving the end of the buffer region.
+
+First we assert that the string starts with the double quote, which we advance past.
+
+Then we iterate over the input until it ends or we reach the closing quote.
+
+We unescape the input into the buffer, advancing the end of the buffer.
+
+We handle all the escaping in JSON strings.
+
+Specifically, we can see a backslash followed by:
+
+- b,f,n,r,t
+- ",\,/
+- u followed by four hex digits with either A-F or a-f
+
+In every case we write the unescaped character into the buffer, advancing .end, and we also copy all non-escaped characters over directly.
+In the case of \u we encode as UTF-8.
+
+Finally we return a span covering the area that .end advanced over.
+I.e. the length of the returned span is also the length that was added to the buffer span.
+
+If we would ever advance the buf past the max we also crash the program (prt, flush, exit).
+*/
+
+// Utility to convert a hex digit to its integer value
+int hex_to_int(char c) {
+    if ('0' <= c && c <= '9') return c - '0';
+    if ('a' <= c && c <= 'f') return 10 + c - 'a';
+    if ('A' <= c && c <= 'F') return 10 + c - 'A';
+    return -1; // Error case, should never happen if input is correct
+}
+
+// Function to parse unicode sequence and write as UTF-8
+void write_utf8_from_hex(u8 **buf, char *hex) {
+    int codepoint = (hex_to_int(hex[0]) << 12) | (hex_to_int(hex[1]) << 8) |
+                    (hex_to_int(hex[2]) << 4) | hex_to_int(hex[3]);
+    if (codepoint < 0x80) {
+        *(*buf)++ = codepoint;
+    } else if (codepoint < 0x800) {
+        *(*buf)++ = 192 + (codepoint >> 6);
+        *(*buf)++ = 128 + (codepoint & 63);
+    } else if (codepoint < 0x10000) {
+        *(*buf)++ = 224 + (codepoint >> 12);
+        *(*buf)++ = 128 + ((codepoint >> 6) & 63);
+        *(*buf)++ = 128 + (codepoint & 63);
+    } else {
+        *(*buf)++ = 240 + (codepoint >> 18);
+        *(*buf)++ = 128 + ((codepoint >> 12) & 63);
+        *(*buf)++ = 128 + ((codepoint >> 6) & 63);
+        *(*buf)++ = 128 + (codepoint & 63);
+    }
+}
+
+span json_s2s(json j, span *buffer, u8 *max) {
+    u8 *buf = buffer->end;
+    span ret = { buf, buf };
+
+    if (*j.s.buf != '\"') {
+        prt("Expected starting quote in JSON string\n");
+        flush();
+        exit(1);
+    }
+
+    for (u8 *s = j.s.buf + 1; s < j.s.end && *s != '\"'; s++) {
+        if (buf >= max) {
+            prt("Buffer overflow detected\n");
+            flush();
+            exit(1);
+        }
+        if (*s == '\\') {
+            s++;
+            switch (*s) {
+                case 'b': *buf++ = '\b'; break;
+                case 'f': *buf++ = '\f'; break;
+                case 'n': *buf++ = '\n'; break;
+                case 'r': *buf++ = '\r'; break;
+                case 't': *buf++ = '\t'; break;
+                case '\"': case '\\': case '/': *buf++ = *s; break;
+                case 'u':
+                    if (s + 4 >= j.s.end) {
+                        prt("Incomplete unicode escape in JSON string\n");
+                        flush();
+                        exit(1);
+                    }
+                    write_utf8_from_hex(&buf, (char *)(s + 1));
+                    s += 4;
+                    break;
+                default:
+                    prt("Unknown escape sequence in JSON string\n");
+                    flush();
+                    exit(1);
+            }
+        } else {
+            *buf++ = *s;
+        }
+    }
+    ret.end = buf;
+    buffer->end = buf;
+    return ret;
+}
+
+/*
+In json_parse_prefix_string we consume a JSON string from the input span and wrap it as a json.
 
 We handle all the escaping in JSON strings.
 
@@ -1239,7 +1350,7 @@ Here we just consume the initial and final double quotes, parse all the escaping
 If we return successfully ret.s.end and input->buf will be equal at the end.
 */
 
-json parse_json_prefix_string(span *input) {
+json json_parse_prefix_string(span *input) {
     if (empty(*input) || *input->buf != '\"') return nulljson();
     advance1(input);
     span start = *input;
@@ -1252,7 +1363,7 @@ json parse_json_prefix_string(span *input) {
                     advance1(input);
                     if (empty(*input) || !isxdigit(*input->buf)) return nulljson();
                 }
-            } else if (strchr("bfnrt\"\\/\"", *input->buf) == NULL) {
+            } else if (strchr("bfnrt\"\\/", *input->buf) == NULL) {
                 return nulljson();
             }
         }
@@ -1264,14 +1375,14 @@ json parse_json_prefix_string(span *input) {
 }
 
 /*
-In parse_json_prefix_number, we handle the JSON number format, namely:
+In json_parse_prefix_number, we handle the JSON number format, namely:
 
 We either return nulljson() if we could not parse the number for any reason or a json which includes the number that was parsed.
 
 Manually written.
 */
 
-json parse_json_prefix_number(span *input) {
+json json_parse_prefix_number(span *input) {
   json ret = {0};
   ret.s.buf = input->buf;
 
@@ -1303,7 +1414,7 @@ json parse_json_prefix_number(span *input) {
 Manually written for now.
 */
 
-json parse_json_prefix_littok(span *input) {
+json json_parse_prefix_littok(span *input) {
   span inner;
   if (!empty(inner = consume_prefix(S("true"), input))) return (json){inner};
   if (!empty(inner = consume_prefix(S("false"), input))) return (json){inner};

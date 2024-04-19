@@ -1,493 +1,3 @@
-/* cmpr design ideas / plans
-
-Files and blocks
-----
-
-20240409
-
-Files can be empty, but blocks are never empty, which means an empty file contains no blocks.
-
-We maintain the clean definition of blocks (they are non-empty spans of texts) and we also respect the idea of files.
-
-Therefore, j/k order is a union of the file list and the block list.
-
-We do away with the earlier idea of empty blocks only in empty files.
-
-As an example, if the project contains files a, b, c, and d containing the following blocks:
-
-a: 1 2 3
-b: no blocks
-c: 4 5
-d: 6
-
-In j/k order (formally, just kidding order) we visit three blocks for file a, and the empty file b, and then the fourth block in file c.
-
-Unlike as of v5, we do not count a block index for the empty file b, which means you can add an empty file to your project to record the intention to store some blocks there in the future without changing the number of blocks in your project.
-The language of empty files does not even need to be defined, at least not for ingest.
-Files and blocks are separate lists, but they have a total order.
-
-Now we also say (as of v6, say) that every block has a checksum.
-The checksum isn't guaranteed to stay the same between versions, but the tool should be responsible for updating it, which means at least one overlap between checksum implementations to support version upgrading.
-If the file is very short we may just store the content itself.
-
-For now, we are assuming that the only use we have for the checksums is that we can identify whether a file contents have changed.
-If they have, we can identify changes to individual blocks if the file is divided into blocks.
-However, as the checksum function we are using is of course opaque, we will not be able to measure block similarity, only content-identity, and that only probabilistically.
-
-The concept of empty files also makes vi-like normal mode commands like d, p, o, useful to do things like take a block from an existing file with d and move it into a new file with p, even if that file was empty.
-Obviously this will get more useful when we have actual content-aware hashing.
-
-
-
-
-
-
-
-
-Basic operations
-----
-20240310
-
-The basic operations are all on blocks.
-
-They are:
-
-r/R (currently split into two parts but logically one operation)
-d (not implemented)
-o (not implemented)
-e
-x (not implemented)
-p/P (not implemented)
-
-These are all modifying operations, but we also have:
-
-undo
-redo
-diff
-
-This family of operations change the block contents, but not necessarily to something new.
-Undo is "u" in vim, but redo requires a modifier key.
-I'm not sure if we want to keep these exact keyboard shortcuts, especially as modifier keys are difficult in some environments.
-
-We also need new keys for the inverse operations of "r/R".
-This really needs, to be full-featured, to include getting the full block into the clipboard, getting the comment part or code part, and optionally applying some transformation to either one of these.
-
-An easy DSL to express this is the following:
-
-prompt("writethecode",commentpart(block))
-
-In this idea, block is a local variable, commentpart and prompt are functions, and the string literal "writethecode" is an identifier for a prompt template which in this case takes a single argument.
-
-Arguments to prompts are always positional and can always be empty.
-The prompt "writethecode" might be given on the conf file or could come from a block of prompt templates, or another conf file.
-
-
-
-
-
-
-
-
-
-Implementation plan
-----
-20240310
-
-When we read in data from disk (in get_code) we should also do all indexing operations.
-
-This means we get checksums for all our blocks and all lines.
-
-In particular:
-
-- we make a lines spans which we store on ui_state
-- this will be kept up to date for data that is in memory only
-
-It is intended that the backing file always contains the same lines as we have in inp.
-
-However, as we do not exclusively own the file, we always check it when opening a project and again before writing.
-
-Specifically, when we write, we first copy the file, if it exists, to a .bak copy.
-We read the bytes of this file and compare them with what we have in memory.
-Note that in new_rev we still have the previous contents of the file (since that is where we update file.contents and inp and therefore the block contents as well)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Networking Plan
-----
-
-A revstore:
-
-- stores blocks
-- serves lists of block hashes which it has
-- serves block contents for a given hash when asked
-- only allows known users to write to it
-- may have access controls on who can read from it
-- necessarily has rate limits on all access for all users, even if only those imposed by hardware
-
-Because a revstore is controlled by a certain author, it's a great place to get vetted news, if you trust that author (or curator).
-
-Guiding principle:
-
-Whenever possible, determine everything from the revstore contents itself.
-
-> cmpr --rvs-server
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Outputs
-----
-
-Let's say the filetype is HTML.
-It would be natural to be able to view the output (maybe continuously updated) without having to use the (B)uild command just for that.
-So let's say we have "V" for view, and this could include a 20px fixed header with a history bar.
-The current contents will automatically refresh.
-
-However, we might not want to treat an HTML file (particularly a generated one) as a source of blocks.
-This means if we have Library: we should have View: as well.
-The point is to bring the view into the workflow (for example, as an input to some procedure) but not add blocks.
-Note that you can still edit a file.
-The necessity for View: to open an external browser is a limitation of the terminal interface.
-In particular, it will not play nicely with SSH.
-A :view-url would be a nice way to get a network-friendly https url to fetch HTML from.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Block chains
-----
-
-As a simple example of a more general idea, we propose chains of blocks as an include mechanism.
-
-We have noted that an LLM requires input to be provided in some order.
-
-Therefore each block can strictly speaking only have one block immediately preceding it.
-
-The idea of a block chain is just this: each block may name its immediate predecessor.
-
-The syntax for this can be as follows:
-
-<block-start-token> #name-of-block @predecessor-name
-
-This suggests two basic features:
-
-1. An index of block names to block indices.
-
-2. A transform on blocks that expands references (transitively) and removes references if desired.
-
-The implementation is like this:
-
-expand_blockrefs: Block -> State BlockChain
-expand_blockrefs Complete b := b
-expand_blockrefs Child b := expand_blockrefs (expand_parent b)
-
-Where expand_parent simply concatenates the parent block to the block itself.
-Obviously, expand_blockrefs can be extended to have multiway branching, to intelligently handle cycles, and so on.
-
-This can be seen as a specific case of a more general pattern:
-
-1. look up a block
-2. do something with it
-
-In the case of r/R this is split the comment part, wrap it with a prompt template, send it to an LLM, and replace the remaining suffix of the block with the LLM output.
-There's a human in the loop, which is enhanced if we have both "r" (regenerate) and "u" (undo) in the same UI.
-
-The idea for "r" implementation is that if you turn the API on, it just does it.
-Then you have "u" to go back and perhaps some kind of diff view.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Name spaces
-----
-
-A name space is a list of pairs of checksums and names.
-It is published by a revstore which also hosts blocks having all the given checksums.
-
-There can only be one name for a block in a given namespace.
-
-As an example, I can publish at spanio.cmpr.ai my own namespace for the spanio library.
-
-I can also publish all of the blocks.
-
-Then you can run any of my code by getting an index block from my server, listing the name space, searching the names, and accessing any of interest.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Third half
-----
-
-The third half is the diff layer.
-
-If you have a block and you want a better version of that block, you want to be able to describe the difference in English and have ChatGPT make it happen.
-
-In other words, there are two dimensions:
-
-- block index dimension
-- time dimension
-
-Between any two blocks a, b, there is a diff d(a,b) that represents the change from a to b.
-This can be seen as a delta or a derivative.
-
-A very natural operation is describe_diff(a, b) which is like diff(a, b) but it adds an English explanation.
-
-This can be something like "This fixes a bug in the code by changing a pointer from an incorrect to a correct value" but a more useful description would include variable names and similar detail such that the patch can likely be recreated.
-
-For each block we have at least three neighbors.
-First we have the parent block in time.
-This is whatever it was before you edited it into its current state.
-Unless you just created it and it is still empty (in which case it does not exist since blocks are never empty) then it has some previous state (although that may have been the nonexisting state of the empty block itself...).
-This just means it is the first block in its lineage.
-
-Second we always have some block chain parent.
-This is the pointer to the foundational information on which we depend.
-(The root node by the way could be considered implicitly to point to GPT4 as currently we don't expect it to work on other models without testing.
-This is a way of saying we depend on some knowledge built into the model.)
-This is a temporal relationship loosely speaking, but can be edited easily, e.g. when a bootstrap block gets split into subcomponents.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Implementation plans
-----
-20240310
-
-First we set up the indices: lines, blocks, files.
-
-Then we review this file and work out a plan.
-
-But before any of that, it turns out, we are actually implementing openai-key support.
-
-First we will write a function that just gets the openai-key from a file .cmpr/openai-key which must be owned by the current user and readable only by that user (i.e. chmod 0400).
-
-The end library experience we want should be span result = llm(span).
-
-We want to record all our API inputs and outputs.
-
-Before calling llm() we will call some other setup functions.
-
-So the API we want from the rest of the code is just this:
-
-- setup_llm(): does whatever is required to be able to use the LLM
-- llm(): uses the LLM
-- free_llm(): does whatever cleanup is required
-
-All the specifics of what the LLM is and what these steps are can change by configuration.
-
-One issue is how the data should be sent to the LLM.
-For now since we are supporting OpenAI first we will just send JSON, and we can set our system message and so on.
-
-*/
-
-/*
-Below we have shell functions which we used for building in the early days of the project.
-
-SH_FN_START
-
-F=cmpr/cmpr.c
-
-export_functions() {
-  awk 'BEGIN{EMIT=0} /^SH_FN_END$/{EMIT=0} {if(EMIT)print} /^SH_FN_START$/{EMIT=1}' <"$F" >cmpr/functions.sh;
-}
-
-spanio_post() {
-  echo '```'
-  cat <<EOF
-You are an expert code writer, writing complete and accurate code yourself, NOT telling someone else how to write the code.
-Your code will be integrated into an existing system, so just reply with the code that was asked for.
-Never silently consume errors, either don't test for something and assume that it's correct, or if you must test for it and it is not correct, then fail loudly and exit.
-Answer briefly and focus on code.
-Usually you will be asked to write a function that is described by a comment.
-In this case just reply with a single function.
-Feel free to write function declarations for any helper or library funtions that we need but don't already have.
-Don't implement the later helper functions, as we will do that in a subsequent step.
-EOF
-}
-
-spanio_prompt() {
-  ( spanio_pre
-    awk '/END LIBRARY CODE/ {exit} {print}' "$F"
-    spanio_post
-  ) | xclip -i -selection clipboard
-}
-
-index() {
-  ( cd cmpr
-    ctags "$F"
-    code_blocks < "$F" > blocks
-  )
-}
-
-build() {
-  gcc -o cmpr/dist/cmpr -g cmpr/cmpr.c -lm
-}
-
-clipboard_copy() {
-  xclip -i -selection clipboard
-}
-
-clipboard_paste() {
-  xclip -o -selection clipboard
-}
-
-SH_FN_END
-
-just stashed here for now:
-
-Reply only with code. Do not simplify, but include working code. If necessary, you may define a helper function which we will implement later, but do not include comments leaving out key parts. Your code must be complete as written, but calling functions that do not yet exist is allowed.
-
-*/
-
 /* import libraries 
 
 
@@ -605,7 +115,7 @@ JavaScript: js-comment-2-code
 Markdown: md-comment-2-code
 
 */
-/* #config_fields #conftable
+/* #config_fields #conftable ->gpt3.5
 
 We define CONFIG_FIELDS including all our known config settings, as they are used in several places (with X macros).
 
@@ -614,20 +124,25 @@ The config settings are:
 - projdir, location of the project directory that we are working with as a span
 - revdir, a span containing a relative or absolute path to where we store our revisions
 - tmpdir, another path for temp files that we use for editing blocks
-- buildcmd, the command to do a build (e.g. by the "b" key)
+- cmprdir, the directory for project state, usually .cmpr
+- buildcmd, the command to do a build (e.g. by the "B" key)
 - bootstrap, a command that creates an initial prompt (see README)
 - cbcopy, the command to pipe data to the clipboard on the user's platform
 - cbpaste, the same but for getting data from the clipboard
+- model, the LLM currently in use, one of "gpt-3.5-turbo", "gpt-4-turbo", "clipboard"
 */
 
 #define CONFIG_FIELDS \
-X(projdir) \
-X(revdir) \
-X(tmpdir) \
-X(buildcmd) \
-X(bootstrap) \
-X(cbcopy) \
-X(cbpaste)
+    X(projdir) \
+    X(revdir) \
+    X(tmpdir) \
+    X(cmprdir) \
+    X(buildcmd) \
+    X(bootstrap) \
+    X(cbcopy) \
+    X(cbpaste) \
+    X(model)
+
 /* #projfiles
 
 A project can contain multiple files.
@@ -667,6 +182,7 @@ This includes, so far:
 - terminal_rows and _cols which stores the terminal dimensions
 - scrolled_lines, the number of physical lines that have been scrolled off the screen upwards
 - openai_key, an OpenAI API key, or an empty span
+- bootstrapprompt, either empty or contains the bootstrap prompt
 
 Additionally, we include a span for each of the config files, with an X macro inside the struct, using CONFIG_FIELDS defined above.
 
@@ -687,55 +203,64 @@ typedef struct ui_state {
     int terminal_cols;
     int scrolled_lines;
     span openai_key;
+    span bootstrapprompt;
     #define X(name) span name;
     CONFIG_FIELDS
     #undef X
 } ui_state;
 
 ui_state* state;
-/* _network return type
+/* network return type, used by LLM API functions
+
+Contains a response, generally json, if success; an error, a human readable string, otherwise.
+
 */
 
 typedef struct {
   int success;
-  span result;
+  span response;
+  span error;
 } network_ret;
 
 /* #all_functions #replywithok
 */
 
+// main loop and input
 void main_loop();
 char getch();
 void handle_keystroke(char);
 void keyboard_help();
 
+// LLM APIs
 void read_openai_key();
-span gpt35_turbo(json);
-network_ret gpt35_turbo_network(json);
-void store_api_req(span,span);
-void store_api_resp(span,span);
+network_ret call_gpt(json messages, span model); // OpenAI API entry point
+network_ret call_gpt_network(json); // network helper function
 
+// setup and startup
 void handle_args(int argc, char **argv);
 
 // conf stuff
+void save_conf();
 void check_conf_vars();
 void ensure_conf_var(span*, span, span);
 void print_config();
 void parse_config();
 int add_projfile(span); // helper for check_conf_vars
+void check_dirs();
 
 void reset_stdin_to_terminal();
 
-void toggle_visual();
-
 // block operations
+void toggle_visual();
 void edit_current_block();
 void rewrite_current_block_with_llm();
 json gpt_message(span role, span message);
 void send_to_llm(span prompt);
+void handle_llm_response(span);
 void replace_code_clipboard();
 span block_comment_part(span block);
 span comment_to_prompt(span comment);
+span strip_markdown_codeblock(span);
 void send_to_clipboard(span prompt);
 int file_for_block(span block);
 void replace_block_code_part(span new_code);
@@ -744,7 +269,7 @@ void handle_edited_file(char* filename);
 
 span pipe_cmd_cmp(span); // should probably be a library method
 
-void compile();
+void compile(); // aka 'B'uild
 
 // search
 void start_search();
@@ -757,10 +282,14 @@ int find_block(span);
 // ex commands
 void start_ex();
 void handle_ex_command();
+void gen_bootstrap();
 void bootstrap();
 void addfile(span);
 void addlib(span);
 void ex_help();
+void set_highlight();
+void reset_highlight();
+void select_model();
 
 // ingest
 void get_code(); // read and index
@@ -780,16 +309,15 @@ span count_physical_lines(span, int*);
 void print_multiple_partial_blocks(int,int);
 void print_single_block_with_skipping(int,int);
 
-void cmpr_init(); // handles --init
-
-// supporting functions
+// supporting functions, CLI flags
 void settings_mode(); // obsolete?
+void cmpr_init(); // handles --init
 void print_block(int);
 void print_comment(int);
 void print_code(int);
 int count_blocks();
-char* tmp_filename();
-void new_rev(char*, int);
+char* tmp_filename(); // used by 'e' edit command
+void new_rev(char*, int); // new file revision saved after any change to a block
 /* #main
 
 In main,
@@ -817,11 +345,15 @@ We call a function handle_args to handle argc and argv.
 This function will also read our config file (if any).
 We call check_conf_vars() once after this; we will also call it in the main loop but we need it before trying to get the code.
 
+We call check_dirs() which creates any missing directories.
+
 Next we call a function get_code().
 This function either handles reading standard input or it reads the files indicated by our config file.
 In either case, once this returns, inp is populated and any other initial code indexing work is done.
 
 Next we call get_revs(), which handles reading and indexing all of our revisions (in revdir).
+
+We call gen_bootstrap(), which updates the bootstrap prompt.
 
 Then we call main_loop().
 
@@ -831,6 +363,7 @@ This also just gets us into the habit of calling flush() everywhere, which is pr
 */
 
 void test_openai();
+void test_handle_llm();
 
 int main(int argc, char** argv) {
     init_spans();
@@ -843,12 +376,13 @@ int main(int argc, char** argv) {
     state->files = projfiles_alloc(1024);
     state->files.n = 0;
 
-    //read_openai_key();
+    read_openai_key();
 
     handle_args(argc, argv);
     check_conf_vars();
+    check_dirs();
     get_code();
-    //test_openai();
+    //gen_bootstrap();
     main_loop();
 
     flush();
@@ -858,49 +392,39 @@ int main(int argc, char** argv) {
 }
 
 /*
-test_openai
+test_handle_llm
 */
 
- /*
-void test_openai() {
-  prt2cmp();
-  json arr = json_a();
-  json o = json_o();
-  json_o_extend(&o, S("role"), json_s(S("user")));
-  json_o_extend(&o, S("content"), json_s(S("Hello.")));
-  json_a_extend(&arr, o);
-  prt2std();
-  wrs(arr.s); terpri();
-  //flush();exit(0);
-
-  span reply = gpt35_turbo(arr);
-  wrs(reply);
-
-  terpri();
-  flush();
-  exit(0);
+void test_handle_llm() {
+  span j = S(
+          //"\"```c\n#define CONFIG_FIELDS(X) \\\n    X(projdir) \\\n    X(revdir) \\\n    X(tmpdir) \\\n    X(cmprdir) \\\n    X(buildcmd) \\\n    X(bootstrap) \\\n    X(cbcopy) \\\n    X(cbpaste)\n``` \""
+          //"\"```c\n#define CONFIG_FIELDS(X) \\\n    X(projdir) \\\n    X(revdir) \\\n    X(tmpdir) \\\n    X(cmprdir) \\\n    X(buildcmd) \\\n    X(bootstrap) \\\n    X(cbcopy) \\\n    X(cbpaste)\n``` \""
+  "{"
+    "\"id\": \"chatcmpl-9ERsOKQxgFMb7XwrGHwznJVcbOZ3c\","
+    "\"object\": \"chat.completion\","
+    "\"created\": 1713230776,"
+    "\"model\": \"gpt-3.5-turbo-0125\","
+    "\"choices\": ["
+      "{"
+        "\"index\": 0,"
+        "\"message\": {"
+          "\"role\": \"assistant\","
+          "\"content\": \"```c\\n#define CONFIG_FIELDS(X) \\\\\\n    X(projdir)\\n``` \""
+        "},"
+        "\"logprobs\": null,"
+        "\"finish_reason\": \"stop\""
+      "}"
+    "],"
+    "\"usage\": {"
+      "\"prompt_tokens\": 1176,"
+      "\"completion_tokens\": 61,"
+      "\"total_tokens\": 1237"
+    "},"
+    "\"system_fingerprint\": \"fp_c2295e73ad\""
+  "}"
+  );
+  handle_llm_response(j);
 }
-*/
-/*
-Create an object with json_o(), then add key value pairs with json_o_extend().
-Then prt, flush, exit(0).
-
-void test_json() {
-    json j = json_o();
-    json j2 = json_s(S("role"));
-    json j3 = json_s(S("user"));
-    j = json_o_extend(j, j2, j3);
-    json j4 = json_s(S("content")), j5 = json_s(S("Hello!"));
-    j = json_o_extend(j, j4, j5);
-    terpri();
-    wrs(j.s);
-    terpri();
-    flush();
-    sleep(1);
-    exit(0);
-}
-*/
-
 /* #read_openai_key
 
 In this function, we check that the file .cmpr/openai-key exists and has the correct permissions.
@@ -915,12 +439,6 @@ We set state.openai_key to point to the file contents.
 
 However, we actually want to trim whitespace (such as a newline that must end the file) in case we print the key as a string (such as in an HTTP header), so we call trim() on it.
 */
-
-#include <sys/stat.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
 
 void read_openai_key() {
     const char* key_path = ".cmpr/openai-key";
@@ -945,99 +463,132 @@ void read_openai_key() {
 
     state->openai_key = trim(key_span);
 }
-/* #gpt35_turbo
+/* #call_gpt
 
-Here we talk to the GPT3.5-turbo model.
+Here we talk to the OpenAI models via the API.
 
-The function is called gpt35_turbo since the model param is hardcoded.
+We are given a json (the type) which contains an array of messages, and a span which contains a model string, and return network_ret.
 
-We are given a json (the type) which contains an array of messages, and return a span containing the content of the API response.
+First we set up a json object.
+Wrapped with prt2cmp() and prt2std(), we make a json object and extend it with "messages" as the messages and with "model" as json_s of the model string.
 
-First we set up a span for the POST data with .buf pointing at cmp.end.
-We call prt2cmp(), and at the end, prt2std().
-We hardcode the model part of the JSON object as '{"model":"gpt-3.5-turbo","messages":', which we prt.
-We then wrs the passed-in messages.s, then prt the closing "}", completing our POST data in cmp space.
-After prt2std we set the return span to point to the new end of cmp, so that our span contains the printed data.
+Then we call call_gpt_network to handle the HTTP request.
 
-Then we call gpt35_turbo_network to handle the HTTP request.
+We write the request body and the response or error to disk using write_to_file_span, without clobbering since the files should not already exist.
+The filename is <cmprdir>/api_calls/<timestamp>{-req,-resp,-err} where cmprdir comes from state and the timestamp is in the format YYYYMMDD-hhmmss.
 
-We write the request body to disk when sending the request and the response to disk by calling the store_api_{req,resp} functions.
+Note: recall the %.*s pattern when printing spans with prt.
 */
 
-/* #gpt35_turbo_network
+network_ret call_gpt(json messages, span model) {
+    prt2cmp();
+    json req = json_o();
+    json_o_extend(&req, S("model"), json_s(model));
+    json_o_extend(&req, S("messages"), messages);
+    prt2std();
+    network_ret result = call_gpt_network(req);
+    
+    char timestamp[20];
+    time_t now = time(NULL);
+    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", localtime(&now));
+    
+    span req_span = req.s;
+    span resp_span = result.response;
+    span err_span = result.error;
+    
+    char req_filename[256], resp_filename[256], err_filename[256];
+    snprintf(req_filename, sizeof(req_filename), "%.*s/api_calls/%s-req", len(state->cmprdir), state->cmprdir.buf, timestamp);
+    snprintf(resp_filename, sizeof(resp_filename), "%.*s/api_calls/%s-resp", len(state->cmprdir), state->cmprdir.buf, timestamp);
+    snprintf(err_filename, sizeof(err_filename), "%.*s/api_calls/%s-err", len(state->cmprdir), state->cmprdir.buf, timestamp);
+    
+    write_to_file_span(req_span, S(req_filename), 0);
+    if (result.success) {
+        write_to_file_span(resp_span, S(resp_filename), 0);
+    } else {
+        write_to_file_span(err_span, S(err_filename), 0);
+    }
+    
+    return result;
+}
+/* #call_gpt_network
 
-This is the network part of gpt35_turbo().
+This is the network part of call_gpt().
 
-We get a json containing the complete API request and return a successful API response or some error message.
+We get a json containing the API request POST data (in the inner span .s) and return a successful API response or some error message.
 
 We handle the communication with libcurl, using CURLOPT_POSTFIELDSIZE to explicitly set the length of the data we are sending and CURLOPT_POSTFIELDS just gets the span .buf directly (not a null-terminated string).
 
-Our return value is a network_ret which either has success = 1 and the result contains the body of the API response or success = 0 and the result is a human-readable error message.
+Our return value is a network_ret, declared above, which either has success = 1 and the response contains the body of the API response or success = 0 and .error contains a human-readable error message.
+
+(Note that curl_easy_strerror returns a const char* so we have to cast to char* before calling S().)
 
 To collect the response we use a write_callback which passes a span around as the user data.
-*/
+We read the API response into cmp space, so this span starts out as an empty span at cmp.end.
+When extending it we check that it does not go past cmp_space + BUF_SZ (and complain and exit if that happens).
 
- /*
-size_t write_callback(void *buffer, size_t size, size_t nmemb, void *userp) {
-    span *response_span = (span *)userp;
-    size_t total = size * nmemb;
-    if (response_span->end + total > cmp_space + BUF_SZ) {
-        prt("overflow\n");
-        flush();
-        exit(1);
-    }
-    memcpy(response_span->end, buffer, total);
-    response_span->end += total;
-    return total;
-}
+API endpoint: "https://api.openai.com/v1/chat/completions"
 
-network_ret gpt35_turbo_network(json messages) {
-    span post_data, response_span;
-    post_data.buf = cmp.end;
-
-    prt2cmp();
-    prt("{\"model\":\"gpt-3.5-turbo\",\"messages\":");
-    wrs(messages.s);
-    prt("}");
-    prt2std();
-    post_data.end = cmp.end;
-
-    response_span = (span) { cmp.end, cmp.end };
-
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        prt("Failed to initialize curl");
-        flush();
-        exit(EXIT_FAILURE);
-    }
-
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
+The API key (Bearer token) is in state->openai_key, use something like:
     char auth_header[256];
     sprintf(auth_header, "Authorization: Bearer %.*s", len(state->openai_key), state->openai_key.buf);
-    headers = curl_slist_append(headers, auth_header);
+*/
 
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_URL, "https://api.openai.com/v1/chat/completions");
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len(post_data));
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.buf);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_span);
+size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t total_size = size * nmemb;
+    span *s = (span *)userdata;
+    if (s->end + total_size > cmp_space + BUF_SZ) {
+        exit_with_error("Buffer overflow in network response");
+    }
+    memcpy(s->end, ptr, total_size);
+    s->end += total_size;
+    return total_size;
+}
 
-    CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        prt("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        flush();
-        exit(EXIT_FAILURE);
+network_ret call_gpt_network(json request_json) {
+    CURL *curl;
+    CURLcode res;
+    network_ret ret;
+    span post_data = request_json.s;
+    
+    curl = curl_easy_init();
+    if (curl) {
+        span response_span = {cmp.end, cmp.end};
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        char auth_header[1024];
+        snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %.*s", len(state->openai_key), state->openai_key);
+        headers = curl_slist_append(headers, auth_header);
+
+        curl_easy_setopt(curl, CURLOPT_URL, "https://api.openai.com/v1/chat/completions");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len(post_data));
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.buf);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_span);
+
+        res = curl_easy_perform(curl);
+        if (res == CURLE_OK) {
+            ret.success = 1;
+            ret.response = response_span;
+        } else {
+            ret.success = 0;
+            ret.error = S((char*)curl_easy_strerror(res));
+        }
+
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+    } else {
+        ret.success = 0;
+        ret.error = S("Failed to initialize CURL");
     }
 
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
-    return response_span;
+    return ret;
 }
-*/
-/*
-Debugging helper
+/* #print_config
+
+Debugging helper.
+
+Here we print all the config values using an X macro, CONFIG_FIELDS, and state.
 */
 
 void print_config() {
@@ -1700,7 +1251,8 @@ void reset_stdin_to_terminal() {
   close(tty_fd);
 }
 
-/*
+/* #main_loop
+
 In main_loop, we initialize:
 
 - the current index to 0,
@@ -1958,49 +1510,6 @@ void print_multiple_partial_blocks(int start_block, int end_block) {
   prt("%d blocks (printing multiple blocks coming soon!)\n", end_block - start_block);
 }
 
-/* #printsingle
-
-In printsingle, we get the ui state and a limit of lines to print.
-We call printsinglehelper(), which takes:
-
-- the ui state,
-- a max number of lines to print phy_row_lim,
-- a number of lines to skip phy_row_off,
-- an indicator (1) to print or (0) to count the lines,
-- an indicator (1) to split or (0) favor the 
-- the address of a decrement counter for lines remaining (non-negative),
-- the address of a span of unprinted input.
-
-We call an offset (the number of rows to skip) perfect if it perfectly fills the limit, which means that a call to the helper sends the lines remaining to zero and the len of unprinted input to zero on the same call.
-In the helper, if 
-
-The limit must always be less than or equal to state.terminal_rows, otherwise it will be ignored, since we are a paging output mode.
-The block to print from is given by the second argument, always a zero-based integer < state->blocks.n.
-
-If we are in splitting mode, then we first need to determine whether we have more than
-
-Specifically:
-
-- block_row_limit sets a hard limit of vertical lines to be occupied by the printing of the block
-- block_row_offset skips a number of vertical lines of the block before it begins printing at the beginning of a (physical) line.
-
-The caller sets block_row_limit to a desired limit before the call to this function.
-If block_row_limit is zero, we return 0 (the number of lines we have successfully printed, as always).
-If it is negative we prt() a short complaint with newline and exit_failure().
-
-We copy the block into a local span for convenience.
-
-In our first loop, we count physical lines until we know that we have skipped block_row_offset lines.
-We perform this by calling a function, span decrement_physical_skip(int*,int,span), described later.
-The arguments to this function are, in order, the address of block_row_limit, terminal_cols, and our copy of the block, and we assign the return value back to our copy of the block as the block copy always contains data not yet printed (or in this loop, skipped).
-If the len() of the remaining block contents goes to zero in this loop, then we return zero.
-
-We then skip more physical lines until we know whether we can overfill block_row_limit.
-
-If the number of physical lines printed equals the block_row_limit, and the block_row_limit was positive, we can say the offset is "perfect".
-
-*/
-
 /* #handle_keystroke
 
 In handle_keystroke, we support the following single-char inputs:
@@ -2019,7 +1528,7 @@ IGNORE: - v, sets the marked point to the current index, switching to "visual" s
 - n/N, repeat search in forward/backward direction
 - S, (likely to change) goes into settings mode
 - ?, display brief help about the keyboard shortcuts available
-- q, exits (with prt("goodbye\n"); flush(); exit(0))
+- q, exits (prt "goodbye\n", flush, exit)
 
 We call terpri() on the first line of this function (just to separate output from any handler function from the ruler line).
 
@@ -2112,7 +1621,7 @@ void handle_keystroke(char input) {
 /* #keyboard_help
 
 To get the help text we basically copy the lines in #handle_keystrokes above, except formatted nicely for terminal output.
-We split out j/k and g/G onto their own lines though.
+We split out ones like j/k and g/G onto their own lines though.
 Include all relevant details about usage that might be non-obvious, e.g.:
 - r "puts a prompt on the clipboard to rewrite the code part based on comment part"
 Include mnemonic hints where given (e.g. "back" for b).
@@ -2260,23 +1769,24 @@ void start_ex() {
 /* #extable #handle_ex_command
 
 Once the ex_command on the state is set up, this function actually handles it, and clears ex_command to leave ex command entry mode.
-We put all the commands in spans first, so we can conveniently use starts_with for dispatching and len() with skip_n().
-Note that we don't implement ex_help here, as it is already implemented; on :help we just call it.
 
 The ex commands are defined as a table:
 
 1. Supported ex commands:
 
-:bootstrap, :addfile, :addlib, :help
+:bootstrap, :addfile, :addlib, :help, :model
 
 2. Implementation functions:
 
-bootstrap(), addfile(span), addlib(span), ex_help()
+bootstrap(), addfile(span), addlib(span), ex_help(), select_model()
 
-3. Arguments if any:
+3. Arguments:
 
 :addfile, :addlib:
   file path to add.
+
+all others:
+  no arguments.
 
 4. Help text:
 
@@ -2288,25 +1798,149 @@ addfile, addlib:
 
 help:
   Print short help on available ex commands.
+
+model:
+  Select the LLM to use for "r" and other commands.
 */
 
 // stubbed for now (manually)
 void addfile(span s) {}
 void addlib(span s) {}
-void ex_help() {}
 
 void handle_ex_command() {
-    span ex_cmd = state->ex_command;
-    if (starts_with(ex_cmd, S(":bootstrap"))) {
+    if (starts_with(state->ex_command, S(":bootstrap"))) {
         bootstrap();
-    } else if (starts_with(ex_cmd, S(":addfile"))) {
-        addfile(skip_n(ex_cmd, 8));
-    } else if (starts_with(ex_cmd, S(":addlib"))) {
-        addlib(skip_n(ex_cmd, 7));
-    } else if (starts_with(ex_cmd, S(":help"))) {
+    } else if (starts_with(state->ex_command, S(":addfile"))) {
+        span file_path = skip_n(state->ex_command, len(S(":addfile ")));
+        addfile(file_path);
+    } else if (starts_with(state->ex_command, S(":addlib"))) {
+        span lib_path = skip_n(state->ex_command, len(S(":addlib ")));
+        addlib(lib_path);
+    } else if (starts_with(state->ex_command, S(":help"))) {
         ex_help();
+    } else if (starts_with(state->ex_command, S(":model"))) {
+        select_model();
     }
     state->ex_command = nullspan();
+}
+/* #ex_help @extable
+
+In ex_help we print a short help for each of the ex commands given in #extable above.
+
+-- start with newline
+
+We flush and then getch() so the user can see it before returning to the main loop (we prompt the user about this).
+
+*/
+
+void ex_help() {
+    prt("\nCommands available:\n");
+    prt(":bootstrap - %s\n", "Run the user-provided bootstrap command.");
+    //prt(":addfile <path> - %s\n", "Add a file to the project (adds file: line to conf).");
+    //prt(":addlib <path> - %s\n", "Add a library to the project (adds lib: line to conf).");
+    prt(":help - %s\n", "Print short help on available ex commands.");
+    prt(":model - %s\n", "Select the LLM to use for 'r' and other commands.");
+    flush();
+    prt("Press any key to continue...");
+    flush();
+    getch();
+}
+
+/* #set_highlight
+
+The functions set_highlight and reset_highlight are helper functions for highlighting terminal output as black on white.
+*/
+
+void set_highlight() {
+    prt("\033[7m");
+}
+
+void reset_highlight() {
+    prt("\033[0m");
+}
+
+/* #select_model
+
+In select_model we show the user a list of LLMs.
+
+Currently the list is hardcoded to "gpt-3.5-turbo" and "gpt-4-turbo" and "clipboard".
+
+(Later we will allow configuration of other models).
+
+When we enter the function, if state->model is unset we set it to "clipboard" as the default.
+
+We clear the display, enter a loop with getch, handle j/k and enter for selecting, and Esc to do nothing.
+We ignore any other keyboard input for now.
+
+We have helper functions for terminal highlighting.
+
+The initially selected option should be the one that matches state->model.
+
+Also when we return we call save_conf to store any change back to the conf file.
+
+Reminder: never write `const`.
+
+We start with a helper function print_models.
+*/
+
+void print_models(int selected) {
+    char *models[] = {"gpt-3.5-turbo", "gpt-4-turbo", "clipboard"};
+    int num_models = sizeof(models) / sizeof(models[0]);
+
+    for (int i = 0; i < num_models; i++) {
+        if (i == selected) {
+            set_highlight();
+            prt("%s\n", models[i]);
+            reset_highlight();
+        } else {
+            prt("%s\n", models[i]);
+        }
+    }
+    flush();
+}
+
+void select_model() {
+    if (empty(state->model)) {
+        state->model = S("clipboard");
+    }
+
+    int current_selection = 0;
+    char *models[] = {"gpt-3.5-turbo", "gpt-4-turbo", "clipboard"};
+    int num_models = sizeof(models) / sizeof(models[0]);
+
+    for (int i = 0; i < num_models; i++) {
+        if (span_eq(state->model, S(models[i]))) {
+            current_selection = i;
+            break;
+        }
+    }
+
+    clear_display();
+    print_models(current_selection);
+
+    char ch;
+    while ((ch = getch()) != 27) { // Esc key to exit
+        switch (ch) {
+            case 'j':
+                if (current_selection < num_models - 1) {
+                    current_selection++;
+                    clear_display();
+                    print_models(current_selection);
+                }
+                break;
+            case 'k':
+                if (current_selection > 0) {
+                    current_selection--;
+                    clear_display();
+                    print_models(current_selection);
+                }
+                break;
+            case '\n': // Enter key
+                state->model = S(models[current_selection]);
+                save_conf();
+                return;
+        }
+    }
 }
 
 /* #bootstrap
@@ -2319,7 +1953,7 @@ This is similar to #compile above.
 
 However, instead of just running it and letting the output go to the terminal, we capture the output in a span using pipe_cmd_cmp(), which returns a span with the piped data.
 
-Then we send this span to the clipboard with send_to_clipboard().
+We store this on state->bootstrapprompt and send it to the clipboard.
 */
 
 void bootstrap() {
@@ -2330,10 +1964,9 @@ void bootstrap() {
     prt("Running bootstrap command: %s\n", buf);
     flush();
 
-    span output = pipe_cmd_cmp(S(buf));
-    send_to_clipboard(output);
+    state->bootstrapprompt = pipe_cmd_cmp(S(buf));
+    send_to_clipboard(state->bootstrapprompt);
 }
-
 /* #perform_search
 
 In perform_search(), we update the display after the search string has been updated.
@@ -2465,10 +2098,11 @@ In print_ruler we use prt to show
 - the currently selected block,
 - the scrolled lines plus one (i.e. the one-based index of the top visible line)
 - the filename of the current block (get the block by state->current_index, the file by file_for_block, and the file path from the projfile at that index on state). Note that 0 <= current_index < state->blocks.n is an invariant, and we don't need to check for it, but rather simply assume it here, indexing into blocks directly.
+- the currently selected LLM (state->model).
 
 all on a line without a newline.
 
-Our output reads as "Block n/N, Line L, File <path>", using the `%.*s` pattern for the filepath.
+Our output reads as "Block n/N, Line L, File <path>, Model <model>", using the `%.*s` pattern for the filepath and the model.
 */
 
 void print_ruler() {
@@ -2478,7 +2112,7 @@ void print_ruler() {
     char path_buf[2048] = {0}; // Assuming path lengths won't exceed 2047 characters + null terminator
     s(path_buf, 2048, current_file.path);
 
-    prt("Block %d/%d, Line %d, File %s", state->current_index + 1, state->blocks.n, state->scrolled_lines + 1, path_buf);
+    prt("Block %d/%d, Line %d, File %s, Model: %.*s", state->current_index + 1, state->blocks.n, state->scrolled_lines + 1, path_buf, len(state->model), state->model);
 }
 /*
 In print_single_block_with_skipping we get a block index and a pagination index in the form of a number of lines already "scrolled off" above the top of the screen (skipped_lines).
@@ -2924,13 +2558,47 @@ int add_projfile(span file_path_span) {
     projfiles_push(&state->files, new_file);
     return 1;
 }
-/*
+
+/* #check_dirs
+
+Here we ensure that the required directories exist.
+All of these are under state->cmprdir:
+
+revs/
+tmp/
+api_calls/
+
+*/
+
+void check_dirs() {
+    char buf[1024];
+    const char *dirs[] = {"revs/", "tmp/", "api_calls/"};
+    int n = sizeof(dirs) / sizeof(char*);
+
+    for (int i = 0; i < n; i++) {
+        s(buf, 1024, state->cmprdir);
+        int l = len(state->cmprdir);
+        if (buf[l - 1] != '/') {
+            buf[l] = '/';
+            l++;
+        }
+        s(buf + l, 1024 - l, S((char *)dirs[i]));
+        
+        if (mkdir(buf, 0777) && errno != EEXIST) {
+            prt("Failed to create directory %s\n", buf);
+            flush();
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+/* #check_conf_vars
+
 In check_conf_vars() we test the state for all essential configuration variables and if any is missing we prompt the user to set that.
 
 The essential configuration variables, along with the reason why each is required, are:
 
-revdir: We save a revision every time you edit a block, this is where they will be stored (.cmpr/revs is a good choice).
-tmpdir: Location for temporary files for editing a block in the editor, a good choice is .cmpr/tmp.
+cmprdir: Where cmpr will store it's internal state (analogous to .git), recommended: ".cmpr".
 
 TODO: probably all the above "config-related metadata" should be in one place in a table for all the conf vars; we'll do that later.
 For now, a local macro cleans up this code quite a bit.
@@ -2976,8 +2644,8 @@ void check_conf_vars() {
         confChanged = 1; \
     }
 
-    CHECK_SET(revdir, "Enter the directory to save revisions (e.g., .cmpr/revs):\n", S(".cmpr/revs"))
-    CHECK_SET(tmpdir, "Enter the directory for temporary files (e.g., .cmpr/tmp):\n", S(".cmpr/tmp"))
+    CHECK_SET(cmprdir, "Enter the cmpr state directory (default: .cmpr):\n", S(".cmpr/"))
+    //CHECK_SET(tmpdir, "Enter the directory for temporary files (e.g., .cmpr/tmp):\n", S(".cmpr/tmp"))
 
     if (state->files.n == 0) {
         while (1) {
@@ -3269,6 +2937,8 @@ We create a copy of this file at the path for the projfile.
 The file there which may have been edited and contain unsaved changes by some other process.
 So we have a helper function, update_projfile, which takes the projfile index, the path of the rev file, and handles all of this.
 
+Next we call bootstrap(), which wants to process the updated codebase.
+
 Finally we unlink the filename that was passed in, since we have now fully processed it.
 The filename is now optional, since we sometimes also are processing clipboard input, so if it is NULL we skip this step.
 
@@ -3288,9 +2958,11 @@ void new_rev(char* filename, int file_index) {
              tm_now->tm_year + 1900, tm_now->tm_mon + 1, tm_now->tm_mday,
              tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec);
 
+    prt("%s\n", rev_path);flush();
     write_to_file(state->files.a[file_index].contents, rev_path);
 
     update_projfile(file_index, rev_path);
+    //gen_bootstrap();
 
     if (filename) {
         unlink(filename);
@@ -3379,30 +3051,35 @@ json gpt_message(span role, span message) {
 /* #send_to_llm
 
 Here we're given a prompt to send to the LLM.
-We'll check if openai_key is set on state.
-If it is empty then we just call send_to_clipboard, and we are done.
-(Later we'll have some other config method probably.)
+If state->model is "clipboard" then we call send_to_clipboard, and we are done.
 
 Otherwise we use the API.
 In this case we build a json array and extend it with objects.
 Each one has a role (either user or system) and a content.
+As usual our json_* stuff is wrapped in prt2cmp and prt2std.
 
 If there is a block that contains "#systemprompt", then we will send that as the first message.
 
-If there is a block that contains "#bootstrapprompt", we will send that as the first user message.
+If state->bootstrapprompt is non-empty, we will send that as the first user message.
 
-To look up the blocks we use find_block() and state->blocks.
+To look up the blocks we use find_block(), which returns int, and state->blocks.
 
-Then in any case we send our input prompt as the last user message, and send the whole messages array to the api with gpt35_turbo().
+Then in any case we send our input prompt as the last user message, and send the whole messages array to the api.
+
+We call call_gpt() with the messages and state->model.
+
+If the request fails we print the .error and let the user hit a key before returning to read it.
+If it succeeded, we call handle_llm_response with the .response.
+
+Manually edited.
 */
 
 void send_to_llm(span prompt) {
-    //if (empty(state->openai_key)) {
+    if (span_eq(state->model, S("clipboard"))) {
         send_to_clipboard(prompt);
         return;
-    //}
+    }
 
-        /*
     prt2cmp();
     json messages = json_a();
     int system_index = find_block(S("#systemprompt"));
@@ -3410,22 +3087,64 @@ void send_to_llm(span prompt) {
         json_a_extend(&messages, gpt_message(S("system"), state->blocks.s[system_index]));
     }
 
-    int bootstrap_index = find_block(S("#bootstrapprompt"));
-    if (bootstrap_index != -1) {
-        json_a_extend(&messages, gpt_message(S("user"), state->blocks.s[bootstrap_index]));
+    if (!empty(state->bootstrapprompt)) {
+        json_a_extend(&messages, gpt_message(S("user"), state->bootstrapprompt));
     }
 
-    json x = gpt_message(S("user"), prompt);
-    json_a_extend(&messages, x);
+    json_a_extend(&messages, gpt_message(S("user"), prompt));
     prt2std();
 
-    span result = gpt35_turbo(messages);
-    wrs(result);
-    flush();
-    exit(0);
-    */
+    network_ret result = call_gpt(messages, state->model);
+
+    if (!result.success) {
+        prt("Error: %.*s\n", len(result.error), result.error);
+        flush();
+        getch();
+    } else {
+        handle_llm_response(result.response);
+    }
 }
 
+/* #handle_llm_response
+
+Here we get a span response from an LLM API such as OpenAI's.
+
+We parse it as json.
+
+If this fails, we print an error and the response body and exit.
+
+Otherwise, we pull the content out and pass it on.
+
+Manually written for now.
+*/
+
+void handle_llm_response(span res) {
+  //wrs(res);
+  //terpri();
+  json o = json_parse(res);
+  if (json_is_null(o)) {
+    prt("JSON parse failed\n");
+    wrs(res);terpri();
+    flush();
+    exit(0);
+  }
+  json choices = json_key(S("choices"), o);
+  json first = json_index(0, choices);
+  //wrs(first.s);
+  //terpri();
+  json message = json_key(S("message"), first);
+  //wrs(message.s);
+  //terpri();
+  json content = json_key(S("content"), message);
+  //wrs(content.s);
+  //terpri();
+  span content_s = json_s2s(content, &cmp, cmp_space + BUF_SZ);
+  //wrs(content_s);
+  replace_block_code_part(strip_markdown_codeblock(content_s));
+  //terpri();
+  //flush();
+  //exit(0);
+}
 /* #block_comment_part
 
 To split out the block_comment_part of a span, we first write two helper functions, one for C and one for Python.
@@ -3542,14 +3261,15 @@ int find_block(span search_text) {
     return -1;
 }
 
-/*
+/* #comment_to_prompt
+
 In comment_to_prompt, we use the cmp space to construct a prompt around the given block comment.
 
 First we should create our return span and assign .buf to the cmp.end location.
 
 Then we call prt2cmp.
 
-Next we prt the a literal string (such as "```c\n").
+Next we prt a literal string (such as "```c\n").
 Then we use wrs to write the span passed in as our argument.
 Finally we write "```\n\n" and an instruction.
 
@@ -3583,6 +3303,49 @@ span comment_to_prompt(span comment) {
     ret.end = cmp.end;
     return ret;
 }
+
+/* #strip_markdown_codeblock
+
+We are given a span (the response from an LLM) and we find the code inside a code block.
+
+First we declare a span that we will return.
+
+We iterate over all the lines and find those that start with "```".
+
+If there are not exactly two such lines we return the input unchanged.
+
+Otherwise, our return span starts from the line after the first "```" line and ends with the line before the second one.
+*/
+
+span strip_markdown_codeblock(span response) {
+    span ret = response;
+    int count = 0;
+    span line;
+    span start = nullspan();
+    span end = nullspan();
+
+    while (!empty(response)) {
+        line = next_line(&response);
+        if (starts_with(line, S("```"))) {
+            count++;
+            if (count == 1) {
+                start = response;
+            } else if (count == 2) {
+                end = line;
+                break;
+            }
+        }
+    }
+
+    if (count != 2) {
+        return response;
+    }
+
+    ret.buf = start.buf;
+    ret.end = end.buf;
+    return ret;
+}
+
 /*
 In send_to_clipboard, we are given a span and we must send it to the clipboard using a user-provided method, since this varies quite a bit between environments.
 
@@ -3747,6 +3510,8 @@ void replace_block_code_part(span new_code) {
     int file_index = file_for_block(state->blocks.s[state->current_index]);
     span original_block = state->blocks.s[state->current_index];
     span comment_part = block_comment_part(original_block);
+    //wrs(new_code);terpri();flush();getch();//DBG
+    //prt("%.32s\n", cmp_space);
 
     int newlines_needed = 2;
     if (len(comment_part) > 0 && comment_part.end[-1] == '\n') {

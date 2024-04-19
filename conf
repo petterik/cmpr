@@ -1,19 +1,22 @@
 projdir: 
 revdir: cmpr/revs
 tmpdir: cmpr/tmp
+cmprdir: cmpr/
 buildcmd: (cd cmpr && make)
 bootstrap: (chmod +x cmpr/bootstrap.sh && cmpr/bootstrap.sh)
-tests: (cd cmpr; rm -rf cmpr-init-test; mkdir cmpr-init-test; cd cmpr-init-test; ../dist/cmpr --init; find .)
 cbcopy: xclip -i -selection clipboard
 cbpaste: xclip -o -selection clipboard
+model: gpt-3.5-turbo
 
 language: C
 file: cmpr/conf
 file: cmpr/Makefile
 file: cmpr/README.md
 file: cmpr/DATALOSS.md
+file: cmpr/systemprompt
 file: cmpr/cmpr.c
 file: cmpr/spanio.c
 file: cmpr/second
 file: cmpr/bootstrap.sh
 file: cmpr/tests.sh
+file: cmpr/doc/plans.txt

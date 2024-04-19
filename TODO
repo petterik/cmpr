@@ -80,23 +80,39 @@
   ✓ 'v' by accident is annoying
   ✓ push v6
   ✓ intro video -- youtube (language switch)
+  ✓ fix json_o_extend interface
   ✓ support API usage
+  ✓ support LLM rewrite via API
+      ✓ pick a config approach
+      ✓ #send_to_llm
+          ✓ clean up JSON lib
+          ✓ store API req/res pairs
+          ✓ create dirs on startup
+          ✓ test JSON parsing and handle the response
+          ✓ handle errors
+          ✓ strip the markdown
+          ✗ make r not repeat (rate limit)
+          ✓ add GPT4
+          ✓ bootstrap
 
 
 
 
 
 WHAT WE ARE CURRENTLY DOING:
+    probably remove the delay after llm
+    push code
 
-  → support LLM rewrite via API as well
-      → pick a config approach
-        #send_to_llm
-          ✓ clean up JSON lib
-          → store API req/res pairs
-            test JSON parsing and handle the response
-            handle errors
 
-  ✓ fix json_o_extend interface
+
+
+
+
+
+
+
+
+
 
   → feature: checksum for block content in memory and on disk
       ✓ pick a placeholder or simple approach: SipHash?
@@ -118,9 +134,17 @@ WHAT WE ARE CURRENTLY DOING:
 
 
 
+    support arrow keys in :model
+    the respond with OK thing
+    QA on --init and setting language
+    vendor libcurl
+    remove tmpdir and revdir; use cmprdir
+    make cmprdir be optional, defaulting to .cmpr/
+    test / fix check_conf_vars (e.g. cmprdir missing)
     support other AIs via an external script
     idea: when a TODO item is done, put the relevant blocks in a comment
     IDE mode
+    think about LLM refactoring
     first steps on the road total rev awareness 4 4 16
     basic summarize feature (at least vjjjjj should give you something maximizing cols*5 chars worth)
     basic diff features "d" for diff (by def. w/ prev rev) of block and "u" (undo)  4 3 12
