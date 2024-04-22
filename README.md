@@ -18,10 +18,10 @@ Here are some examples of code written in this style:
 A 2048 implementation:
 
 - [Here](https://inimino.github.io/2048/) is the playable game.
-- Here is [all the English code for this implementation](doc/examples/2048.txt); this is everything the LLM sees before generating the playable game above (more info in [the repo](https://github.com/inimino/2048/)).
+- Here is [all the English code for this implementation](doc/examples/2048.md); this is everything the LLM sees before generating the playable game above (more info in [the repo](https://github.com/inimino/2048/)).
 
 In contrast with tools that help you autocomplete code, here we are largely delegating the lower-level code to the LLM, so we are free to focus on the higher-level description.
-However, the programmer remains responsible for the correctness of the generated code, and for debugging, unlike tools that claim to take over the entire task, which is not realistic with today's LLMs.
+However, the programmer remains responsible for the correctness of the generated code, and for debugging when necessary.
 
 A more complex example is [the cmpr code itself](https://github.com/inimino/cmpr/cmpr.c).
 
