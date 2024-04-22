@@ -2,15 +2,18 @@
 
 ## Program in English!
 
-With LLMs like GPT4 we can now write code in English and have the LLM "compile" it into programming language code such as C or Python.
-In this approach, the source code is actually the English (or other natural language) expression of the program's behavior, and the programming language code is treated as generated code, which we do not edit directly.
+With LLMs like GPT4 we can now write code in English and have the LLM compile it into programming language code such as C or Python.
+The source code is now the English expression of the program's behavior.
+
+The programming language code is treated as generated code, which we do not edit directly.
 
 We're still programming, but now in English!
 
-Programming in English, just like learning any new programming language, has a learning curve, but also many benefits, including more effective communication, increased security, and fewer bugs.
-Getting onboarded to a new codebase is much easier when the code can be read in English or in C.
+Programming in English has a learning curve, like any new programming language, but also many benefits.
+The greatest difficulty in programming and debugging, especially in someone else's code, is understanding what is going on.
+Reading a program in English makes this much easier.
+You can also still read the implementation, of course, when necessary.
 
-A common complaint about code comments is that they often don't reflect the state of the code and may be actively misleading and out of date.
 When you read English code that the actual program code is generated from, you know that what you're reading reflects the actual state of the program.
 
 Here are some examples of code written in this style:
@@ -22,6 +25,8 @@ A 2048 implementation:
 
 In contrast with tools that help you autocomplete code, here we are largely delegating the lower-level code to the LLM, so we are free to focus on the higher-level description.
 However, the programmer remains responsible for the correctness of the generated code, and for debugging when necessary.
+
+Compare the English code with [the HTML, CSS, and JS](doc/examples/2048-gen.md); 
 
 A more complex example is [the cmpr code itself](https://github.com/inimino/cmpr/cmpr.c).
 
