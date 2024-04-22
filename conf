@@ -16,7 +16,7 @@ file: cmpr/DATALOSS.md
 file: cmpr/systemprompt
 file: cmpr/cmpr.c
 file: cmpr/spanio.c
-file: cmpr/second
 file: cmpr/bootstrap.sh
 file: cmpr/tests.sh
+file: cmpr/doc/second
 file: cmpr/doc/plans.txt

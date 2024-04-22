@@ -474,7 +474,7 @@ void write_to_file(span content, const char* filename) {
 void write_to_file_2(span content, const char* filename, int clobber) {
   // Attempt to open the file with O_CREAT and O_EXCL to ensure it does not already exist
   /* clobber thing is a manual fixup */
-  int flags = O_WRONLY | O_CREAT;
+  int flags = O_WRONLY | O_CREAT | O_TRUNC;
   if (!clobber) flags |= O_EXCL;
   int fd = open(filename, flags, 0644);
   if (fd == -1) {

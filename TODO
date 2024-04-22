@@ -94,34 +94,26 @@
           ✗ make r not repeat (rate limit)
           ✓ add GPT4
           ✓ bootstrap
+  ✓ probably remove the delay after llm
+  ✓ push code
+
+
+
+
+
+
+
 
 
 
 
 
 WHAT WE ARE CURRENTLY DOING:
-    probably remove the delay after llm
-    push code
-
-
-
-
-
-
-
-
-
-
-
-
   → feature: checksum for block content in memory and on disk
       ✓ pick a placeholder or simple approach: SipHash?
       ✓ get something to compile
       ✓ checksum blocks
-        check in new_rev(?)
-        Speaking of classifiers: let's say two blocks are added in different branches to the same empty file.
-        A classifier can be trained to predict which of the mutually agnostic blocks should be first.
-        Otherwise, a human must make the choice, or a policy which privileges one side as the server.
+      → checksum files, blocks, lines in all revs
 
 
   → dataloss pass: think through everything; addresses control issue  4 4 16
@@ -134,6 +126,7 @@ WHAT WE ARE CURRENTLY DOING:
 
 
 
+    what actually is happening with revdir and tmpdir
     support arrow keys in :model
     the respond with OK thing
     QA on --init and setting language
@@ -261,3 +254,6 @@ Difficulty: 1-4
     video note: we have done things (not 2048) out of training set
     issue with the exec bit on bootstrap.sh
     experiment with GPT4 finetunes
+    Speaking of classifiers: let's say two blocks are added in different branches to the same empty file.
+    A classifier can be trained to predict which of the mutually agnostic blocks should be first.
+    Otherwise, a human must make the choice, or a policy which privileges one side as the server.

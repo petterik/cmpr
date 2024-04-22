@@ -1,9 +1,4 @@
 /* import libraries 
-
-
-An alternate idea here is to let cmpr manage a single .c file with all our dependencies, for example, all header files and all spanio functions, etc.
-This can be a C file to better allow code size optimizations.
-We could have one table where we list all the dependencies.
 */
 
 #define _GNU_SOURCE // for memmem
@@ -19,38 +14,7 @@ typedef uint64_t u64;
 #define flush_exit(n) flush(); exit(n)
 
 /*
-We will start with the curl example:
-
-#!/bin/sh
-curl https://api.openai.com/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer $(cat cmpr/openai-key)" -d '{ "model": "gpt-3.5-turbo", "messages": [ { "role": "system", "content": "You are a helpful assistant." }, { "role": "user", "content": "Hello!" } ] }'
-
-The output may look like:
-
-{
-"id": "chatcmpl-9CeJH1n2bKXPsOR1xqWXyPdIXyDVD",
-"object": "chat.completion",
-"created": 1712801915,
-"model": "gpt-3.5-turbo-0125",
-"choices": [
-{
-"index": 0,
-"message": {
-"role": "assistant",
-"content": "Hello! How can I assist you today?"
-},
-"logprobs": null,
-"finish_reason": "stop"
-}
-],
-"usage": {
-"prompt_tokens": 19,
-"completion_tokens": 9,
-"total_tokens": 28
-},
-"system_fingerprint": "fp_b28b39ffa8"
-}
-
-We can record: the request, the response, the estimated cost.
+We record the request and response so we can calculate the cost.
 
 For now we have the following costs for gpt-3.5-turbo-0125 as the model:
 
@@ -310,7 +274,6 @@ void print_multiple_partial_blocks(int,int);
 void print_single_block_with_skipping(int,int);
 
 // supporting functions, CLI flags
-void settings_mode(); // obsolete?
 void cmpr_init(); // handles --init
 void print_block(int);
 void print_comment(int);
@@ -362,9 +325,6 @@ The main loop reads input in a loop and probably won't return, but just in case,
 This also just gets us into the habit of calling flush() everywhere, which is pretty much necessary since we always care about precisely when our output becomes visible.
 */
 
-void test_openai();
-void test_handle_llm();
-
 int main(int argc, char** argv) {
     init_spans();
     projfiles_arena_alloc(1 << 14);
@@ -382,6 +342,7 @@ int main(int argc, char** argv) {
     check_conf_vars();
     check_dirs();
     get_code();
+    get_revs();
     //gen_bootstrap();
     main_loop();
 
@@ -391,43 +352,9 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-/*
-test_handle_llm
-*/
-
-void test_handle_llm() {
-  span j = S(
-          //"\"```c\n#define CONFIG_FIELDS(X) \\\n    X(projdir) \\\n    X(revdir) \\\n    X(tmpdir) \\\n    X(cmprdir) \\\n    X(buildcmd) \\\n    X(bootstrap) \\\n    X(cbcopy) \\\n    X(cbpaste)\n``` \""
-          //"\"```c\n#define CONFIG_FIELDS(X) \\\n    X(projdir) \\\n    X(revdir) \\\n    X(tmpdir) \\\n    X(cmprdir) \\\n    X(buildcmd) \\\n    X(bootstrap) \\\n    X(cbcopy) \\\n    X(cbpaste)\n``` \""
-  "{"
-    "\"id\": \"chatcmpl-9ERsOKQxgFMb7XwrGHwznJVcbOZ3c\","
-    "\"object\": \"chat.completion\","
-    "\"created\": 1713230776,"
-    "\"model\": \"gpt-3.5-turbo-0125\","
-    "\"choices\": ["
-      "{"
-        "\"index\": 0,"
-        "\"message\": {"
-          "\"role\": \"assistant\","
-          "\"content\": \"```c\\n#define CONFIG_FIELDS(X) \\\\\\n    X(projdir)\\n``` \""
-        "},"
-        "\"logprobs\": null,"
-        "\"finish_reason\": \"stop\""
-      "}"
-    "],"
-    "\"usage\": {"
-      "\"prompt_tokens\": 1176,"
-      "\"completion_tokens\": 61,"
-      "\"total_tokens\": 1237"
-    "},"
-    "\"system_fingerprint\": \"fp_c2295e73ad\""
-  "}"
-  );
-  handle_llm_response(j);
-}
 /* #read_openai_key
 
-In this function, we check that the file .cmpr/openai-key exists and has the correct permissions.
+In this function, we check that the file ~/.cmpr/openai-key exists and has the correct permissions.
 
 Specifically, it should have read permissions only for the owner, which must be the current user.
 
@@ -438,6 +365,9 @@ We then extend cmp.end to fit the file contents, and read the file contents into
 We set state.openai_key to point to the file contents.
 
 However, we actually want to trim whitespace (such as a newline that must end the file) in case we print the key as a string (such as in an HTTP header), so we call trim() on it.
+
+If any of the steps fail, we return and do nothing.
+This will leave openai_key empty, indicating that the API is not available.
 */
 
 void read_openai_key() {
@@ -445,7 +375,8 @@ void read_openai_key() {
     struct stat st;
 
     if (stat(key_path, &st) == -1 || st.st_mode != (S_IRUSR | S_IFREG) || st.st_uid != getuid()) {
-        exit_with_error("Invalid file permissions or file does not exist");
+        return;
+        //exit_with_error("Invalid file permissions or file does not exist");
     }
 
     int fd = open(key_path, O_RDONLY);
@@ -944,7 +875,7 @@ We use static buffers local to the function for the key (which is 16 bytes, give
 
 The key is "ABCDEFGHIJKLMNOP".
 
-Our output is an unsigned int.
+Our output is a u64.
 We pass a pointer to this int into siphash.
 */
 
@@ -1002,14 +933,28 @@ void get_code() {
     checksum_blocks();
 }
 
-/* #get_revs
-
-Not implemented yet.
-
+/*
 How we handle files and blocks:
 
 - Non-empty files are tiled by blocks and the block location unambiguously identifies the file it is part of.
 - Empty files contain no blocks.
+
+We will have a file called catalog in the revdir.
+Each rev will get a line in this file.
+
+The fields can be separated by spaces
+
+50000 LOC * 16 bytes per hash = ~1MB of line hashes
+
+We can just hash short inputs to themselves, but anything 16 bytes or longer we will hash to an ASCII hex representation of the siphash.
+
+This avoids the possibility of collisions between a string and its literal hash (even though this is already unlikely, like 1/2^64 unlikely).
+
+We have an average line length of 39 bytes in our code to date, so we would expand the data by roughly 50% by hashing every line.
+*/
+
+/* #get_revs
+
 */
 /*
 In find_blocks_language_python, we get a span containing a file.
@@ -1526,7 +1471,6 @@ IGNORE: - v, sets the marked point to the current index, switching to "visual" s
 - /, switches to search mode
 - :, switches to ex command line
 - n/N, repeat search in forward/backward direction
-- S, (likely to change) goes into settings mode
 - ?, display brief help about the keyboard shortcuts available
 - q, exits (prt "goodbye\n", flush, exit)
 
@@ -1601,9 +1545,6 @@ void handle_keystroke(char input) {
         case 'N':
             search_backward();
             state->scrolled_lines = 0;
-            break;
-        case 'S':
-            settings_mode();
             break;
         case '?':
             keyboard_help();
@@ -2066,7 +2007,6 @@ Otherwise, there is a newline within the first n characters, we return n or fewe
 We also set s->buf to contain the rest of the span not in the returned prefix.
 */
 
-
 span next_line_limit(span* s, int n) {
     span result = {s->buf, s->buf}; // Initialize result span to start of input span
     if (s->buf == NULL || n <= 0) return result; // Check for null pointer or non-positive length
@@ -2160,7 +2100,6 @@ However, note that a blank line will still require one physical line (because we
 If the physical lines would be more than we need, then we only print enough characters (with wrapping) to fill the lines.
 Otherwise we print the full line, followed by a newline, and then we decrement the number of lines that we still need appropriately.
 */
-
 
 void print_physical_lines(span block, int lines_to_print) {
     while (!empty(block) && lines_to_print > 0) {
@@ -2422,8 +2361,6 @@ void parse_config() {
         }
     }
 }
-
-void settings_mode(){}
 /*
 In read_line, we get a span pointer to some space that we can use to store input from the user, and a default value.
 
@@ -2706,8 +2643,21 @@ void ensure_conf_var(span* var, span message, span default_value) {
     save_conf(); // Rewrite the configuration file with the updated setting
 }
 
-/*
+/* #edit_current_block
+
+
+
+
+
+
+
+
+
+
+
 To edit the current block we first write it out to a file, which we do with a helper function write_to_file(span, char*).
+
+We write the block, which is a span at state->current_index on state.blocks.
 
 Once the file is written, we then launch the user's editor of choice on that file, which is handled by another helper function.
 
@@ -2716,6 +2666,7 @@ That function will wait for the editor process to exit, and will indicate to us 
 If so, then we call another function which will then read the edited file contents back in and handle storing the new version.
 
 If not, we print a short message to let the user know their changes were ignored.
+We let the user press any key before returning to the main loop.
 */
 
 void edit_current_block() {

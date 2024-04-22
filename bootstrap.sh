@@ -1,9 +1,15 @@
 #!/bin/sh
 
+# This bootstrap.sh is a shell script that produces on stdout our bootstrap block.
+# The "bootstrap" config param takes a command to run, which is where we use this.
+# Running the ex command ":bootstrap" in cmpr then runs this, and the bootstrap block is sent to the LLM.
+# You can adapt this to your own project or create your own script or program that outputs what you need.
+
 cat <<EOF
 We are writing cmpr, which is a tool to interact with LLMs and is written in C.
 EOF
 
+# moved this to the end
 #cat <<EOF
 #Here is information about spanio, the library we are using:
 #
@@ -11,6 +17,9 @@ EOF
 #EOF
 #
 #cmpr --print-block $(cmpr --find-block "#libraryintro")
+
+
+# experimenting with leaving out the ctags, since our library intro and #all_functions should be sufficient
 
 #cat <<EOF
 #Here's our ctags:
