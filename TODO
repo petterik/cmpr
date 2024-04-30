@@ -96,6 +96,14 @@
           ✓ bootstrap
   ✓ probably remove the delay after llm
   ✓ push code
+  ✓ replace libcurl with curl
+  ✓ update README
+  ✓ fix 'h' (it's '?' not 'h'...)
+  ✓ strip config directories
+  ✓ support arrow keys in :model
+  ✓ the respond with OK thing
+  ✓ remove tmpdir and revdir; use cmprdir
+  ✓ push v7
 
 
 
@@ -109,6 +117,11 @@
 
 
 WHAT WE ARE CURRENTLY DOING:
+  → support ollama API
+
+
+    idea: maybe go from spec to list of callable functions, approve this, then implementation; allows injecting library call documentation
+    idea: (maybe optionally) put the cmp highwater in the ruler and then start unleaking span allocations
   → feature: checksum for block content in memory and on disk
       ✓ pick a placeholder or simple approach: SipHash?
       ✓ get something to compile
@@ -126,12 +139,7 @@ WHAT WE ARE CURRENTLY DOING:
 
 
 
-    what actually is happening with revdir and tmpdir
-    support arrow keys in :model
-    the respond with OK thing
     QA on --init and setting language
-    vendor libcurl
-    remove tmpdir and revdir; use cmprdir
     make cmprdir be optional, defaulting to .cmpr/
     test / fix check_conf_vars (e.g. cmprdir missing)
     support other AIs via an external script

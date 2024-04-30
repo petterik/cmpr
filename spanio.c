@@ -1,67 +1,77 @@
 /* #libraryintro
 
-Introducing the spanio library.
-We always use spanio methods when possible and never use null-terminated C strings (except when calling library functions or at other interface boundaries where there is no way around it, see s()).
-When we say "print" we mean what prt() does, which is append output to the output span out.
-You still must flush() before the output will be printed to stdout and be visible to the user.
+The spanio library.
+We use spanio methods when possible and only use null-terminated C strings at interface boundaries where there is no way around it, see the s() pattern.
+When we say "print" we mean what prt() does, which is append output to the output span out; it has the printf interface, i.e. format string followed by varargs.
+You must flush() before the output will be printed to stdout and be visible to the user.
+A common cmpr pattern is prt, flush, getch.
+To "complain and exit" means prt, flush, exit(n>0).
+A span has a start pointer and an end pointer, called .buf and .end respectively.
+(A thran has three pointers and can be addressed as two spans which share an endpoint; just an idea at this point.)
 
-- `empty(span)`: Checks if a span is empty (start and end pointers are equal).
-- `len(span)`: Returns the length of a span. Always prefer this over manually subtracting.
-- `init_spans()`: Initializes input, output, and comparison spans and their associated buffers.
-- `prt2cmp()`, `prt2std()`: Swaps output and comparison spans.
-- `prt(const char *, ...)`: Formats and appends a string to the output span, i.e. prints it. Pronounced as prt.
-- `w_char(char)`: Writes a single character to the output span.
-- `wrs(span)`: Writes the contents of a span to the output span.
-- `bksp()`: Backspace, shortens the output span by one.
-- `sp()`: Appends a space character to the output span, i.e. prints a space.
-- `terpri()`: Appends a newline character to the output span.
-- `flush()`, `flush_err()`, `flush_to(char*)`: Flushes the output span to standard output, standard error, or a specified file.
-- `write_to_file_span(span content, span path, int clobber)`: Write a span to a file, optionally overwriting.
-- `write_to_file(span, const char*)`: Deprecated.
-- `read_file_into_span(char*, span)`: Reads the contents of a file into a span.
-- `read_file_S_into_span(span, span)`: Ibid, but taking the filename as a span.
-- `read_file_into_cmp(span)`: Filename as a span, returns contents as a span inside cmp space.
-- `read_file_into_inp(span)`: Filename as a span, returns contents as a span inside inp space.
-- `redir(span)`, `reset()`: Redirects output to a new span and resets it to the previous output span.
-- `save()`, `push(span)`, `pop(span*)`, `pop_into_span()`: Manipulates a stack for saving and restoring spans.
-- `advance1(span*)`, `advance(span*, int)`: Advances the start pointer of a span by one or a specified number of characters.
-- `find_char(span, char)`: Searches for a character in a span and returns its first index or -1.
-- `contains(span, span)`: Checks if one span TEXTUALLY contains another; abc b O(n) string search.
-- `contains_ptr(span, span)`: Checks if one span PHYSICALLY contains another; [[]] O(1) pointer comparisons.
-- `starts_with(span, span)`: Check if spans share $1 as a prefix; O(len($1)) when successful.
-- `consume_prefix(span, span*)`: Shortens a span by a prefix if present, returning that prefix or nullspan().
-- `take_n(int, span*)`: Returns as a new span the first n characters from a span, mutating it.
-- `first_n(span, int)`: Returns n leading chars as a new span without mutating.
-- `skip_n(span, int)`: Returns a span skipping initial chars.
-- `skip_whitespace(span*)`: modifies a span, returning a prefix span of zero or removed whitespace.
-- `next_line(span*)`: Extracts the next line (up to \n or .end) from a span and returns it as a new span.
-- `span_eq(span, span)`, `span_cmp(span, span)`: Compares two spans for equality or lexicographical order.
-- `S(char*)`: Creates a span from a null-terminated string.
-- `char* s(char*,int,span)`: Creates a null-terminated string in a user-provided buffer of provided length from given span, which it also returns for convenience.
-- `nullspan()`: Returns the empty span at address 0.
-- `spans_alloc(int)`: Allocates a spans structure with a specified number of span elements.
-- `span_arena_alloc(int)`, `span_arena_free()`, `span_arena_push()`, `span_arena_pop()`: Manages a memory arena for dynamic allocation of spans.
-- `is_one_of(span, spans)`: Checks if a span is one of the spans in a spans.
-- `spanspan(span, span)`: Finds the first occurrence of a span within another span and returns a span into haystack.
-- `w_char_esc(char)`, `w_char_esc_pad(char)`, `w_char_esc_dq(char)`, `w_char_esc_sq(char)`, `wrs_esc()`: Write characters (or in the case of wrs, spans) to out, the output span, applying various escape sequences as needed.
-- `trim(span)`: Gives the possibly smaller span with any isspace(3) trimmed on both sides.
-- `json_s(span)`: prt a JSON string of $1
-- `json_n(f64)`: prt a + or - inf, a NaN, or a floating point value or integer safely up to 2^53.
-- `json_b(int)`: prt a true or false (only 0 is false).
-- `json_0()`: prt a json_null value ("null").
-- `json_o()`: prt an empty json object.
-- `json_o_extend(json*,span,json)`: extends $1 with key $2 and value $3.
-- `json_a()`: prt an empty json array.
-- `json_a_extend(json*,json)`: extends $1 with key $2.
-- `json_sp(json)`: 1 if $1 is a string (given that it is a json).
-- `json_{s,n,b,0,o,a}p`: full list of json_?p predicate funcs.
-- `json_key(span, json)`: gives a nullable json; object lookup.
-- `json_index(int, json)`: gives a nullable json; array lookup.
-- `json_parse(span)`: parse a span into a json and return it; may be shorter only by trimmed whitespace.
-- `make_json(span)`: return a json wrapper of the span in O(1).
-- note that all the json functions either return the json type (which they also prt, usually this is sent to cmp space) as in the _{s,n,b,0,o,a} constructors, or they return 0 or 1, or they return a nullable json (null representation: just a json containing the null span).
-- all the json constructor functions trim whitespace, and all the predicate functions follow a pointer and examine one byte.
-- the json parser and constant-time wrapper functions are the low-trust and high-trust ways to make a json from a string.
+- empty(span): If a span is empty (start and end pointers are equal).
+- len(span): The length of a span. Prefer this over less clear .end minus .buf.
+- init_spans(): Init global spans and buffers; called only from main().
+- prt2cmp(), prt2std(): Swaps out and cmp spans.
+- prt(char *, ...): Formats and appends a string to the output span, i.e. prints it. Pronounced as prt.
+- prs(char *, ...): Same as prt, but returns a span (allocated in cmp space).
+- w_char(char): Writes a single character.
+- wrs(span): Writes the contents of a span.
+- bksp(): Backspace, shortens the output span by one.
+- sp(): Appends a space character to the output span, i.e. prints a space.
+- terpri(): Prints a newline (name courtesy Common Lisp).
+- flush(), flush_err(), flush_to(char*): Flushes the output span to standard output, standard error, or a specified file.
+- write_to_file_span(span content, span path, int clobber): Write a span to a file, optionally overwriting.
+- write_to_file(span, const char*): Deprecated.
+- read_file_into_span(char*, span): Reads the contents of a file into a span. Deprecated.
+- read_file_S_into_span(span, span): Read the contents of a file $1 into a span $2. Used in new code. Returns a span prefix of $2.
+- read_file_into_cmp(span): Filename as a span, returns contents as a span inside cmp space.
+- read_file_into_inp(span): Filename as a span, returns contents as a span inside inp space.
+- advance1(span*), advance(span*, int): Advances the start pointer of a span by one or a specified number of characters.
+- find_char(span, char): Searches for a character in a span and returns its first index or -1.
+- contains(span, span): Checks if one span TEXTUALLY contains another; abc b O(n) string search.
+- contains_ptr(span, span): Checks if one span PHYSICALLY contains another; [[]] O(1) pointer comparisons.
+- starts_with(span, span): Check if first span is textual prefix of second (or equal).
+- consume_prefix(span, span*): Shortens a span by a prefix if present, returning that prefix or nullspan().
+- take_n(int, span*): Returns as a new span the first n characters from a span, advancing its .buf.
+- first_n(span, int): Returns n leading chars as a new span without mutating.
+- skip_n(span, int): Returns a span skipping initial chars.
+- skip_whitespace(span*): modifies a span, returning a prefix span of zero or more removed whitespace.
+- next_line(span*): Extracts the next line (up to \n or .end) from a span and returns it as a new span.
+- span_eq(span, span), span_cmp(span, span): Compares two spans for equality or lexicographical order.
+- S(char*): Creates a span from a null-terminated string.
+- char* s(span): Returns a null-terminated string (in cmp space) containing the given contents.
+- char* s_buffer(char*,int,span): Copies $3 into $1 (of length $2) and null-terminates it, returning $1 for convenience.
+- nullspan(): Returns the empty span at address 0.
+- spans_alloc(int), span_arena_alloc(int), span_arena_free(), span_arena_push(), span_arena_pop(): Span arena.
+- is_one_of(span, spans): Checks if a span textually equals one of the spans in a spans.
+- spanspan(span, span): Finds the first occurrence of a span within another span and returns a span into haystack.
+- w_char_esc(char), w_char_esc_pad(char), w_char_esc_dq(char), w_char_esc_sq(char), wrs_esc(): Write characters (or for wrs_esc, spans) to the output span, applying various escape sequences.
+- trim(span): Gives the possibly smaller span with any isspace(3) trimmed on both sides.
+- concat(span,span): Returns a new span (in cmp space) containing a concatenation.
+
+JSON
+
+- json_s(span): prt a JSON string (double-quoted and escaped appropriately).
+- json_n(f64): prt a double in JSON format.
+- json_b(int): prt a true or false (only 0 is false).
+- json_0(): prt a json_null value ("null").
+- json_o(): prt an empty json object.
+- json_o_extend(json*,span,json): extends $1 with key $2 and value $3.
+- json_a(): prt an empty json array.
+- json_a_extend(json*,json): extends $1 with key $2.
+- all the above json constructor functions return the json type (which they also prt, usually this is sent to cmp space) as in the _{s,n,b,0,o,a} constructors.
+- json_{s,n,b,0,o,a}p: full list of json_?p predicate funcs, used to distinguish types of json values.
+  - (for example) json_sp(json): 1 if $1 is a string, otherwise 0.
+- json_key(span, json): lookup on json object.
+- json_index(int, json): lookup on json array.
+- the above lookup functions return a "nullable json": either an ordinary json value or a null json if anything went wrong.
+- mnemonic: the argument order was inspired by partial application.
+- int json_is_null(json): returns 0 or 1.
+- json_parse(span): parse a span into a json and return it; may be shorter only by trimmed whitespace; commonly used.
+- make_json(span): return a json wrapper of the span in O(1); the span must be known to be valid json already; rarely used.
+- json_s2s(json,span*,u8*): converts json string $1 into an unquoted string in $2 (not exceeding buffer end $3); returns a span.
+- json_parse_prefix(span*): not usually called directly, but can be used to parse a json value off the front of a buffer, shortening it.
 
 typedef struct { u8* buf; u8* end; } span; // the type of span
 
@@ -90,9 +100,9 @@ A common idiom in functions returning span: use a span ret declared near the top
 Note that we NEVER write const in C, as this feature doesn't pull its weight.
 There's some existing contamination around library functions but try to minimize the spread.
 
-Sometimes we need a null-terminated C string for talking to library functions, we can use this pattern (with "2048" being replaced by some reasonably generous number appropriate to the specific use case): `char buf[2048] = {0}; s(buf,2048,some_span);`.
-This: allocates (apparently on the stack, i.e. you don't have to think about freeing it) a nice buffer that's sufficiently large, copies the span contents into it or crashes your program if the buffer was too small, and then returns the safely null-terminated result (which was the first argument, but is also returned as a convenience).
-This pattern makes it hard to pass a null-terminated string out of a function's scope, but that's perfect anyway, as we also minimize the spread of null-terminated strings.
+Sometimes we need a null-terminated C string for talking to library functions, we can use this pattern (with "2048" being replaced by some reasonably generous number appropriate to the specific use case): char buf[2048] = {0}; s_buffer(buf,2048,some_span);.
+This sets up a nice buffer that's sufficiently large, copies the span contents into it with added null terminator, or crashes your program if the buffer was too small.
+This pattern makes it hard to pass a null-terminated string out of a function's scope, but that's perfect anyway, as we prefer to pass spans around anyway.
 Never assume anything is null-terminated.
 Use spans everywhere.
 
@@ -101,11 +111,17 @@ We never use printf, but always prt.
 A common idiom when reporting errors is to call prt, flush, and exit.
 We could also use flush, prt, flush_err, exit, but up to now we've been lazy about the distinction between stdout and stderr as we have mainly interactive use cases.
 
-To prt a span x we use `%.*s` with len(x) and x.buf.
+To prt a span x we use %.*s with len(x) and x.buf.
 
 A common idiom is next_line() in a loop with !empty().
 
 In main() or similar it is common to call init_spans and often also read_and_count_stdin.
+*/
+
+/* json library design notes
+
+- all the json constructor functions trim whitespace, so that all the predicate functions follow a pointer and examine one byte.
+- the json parser and constant-time wrapper functions are the low-trust and high-trust ways to make a json from a string.
 */
 /* includes */
 
@@ -164,9 +180,10 @@ Usually it is important to do this
 - before any operation that blocks, when the user should see the output that we've already written,
 - generally immediately after prt when debugging anything,
 - after printing any error message and before exiting the program, and
-- at the end of main before returning.
+- at the end of main.
 
-If you want to write to stderr, you can first do a flush, which will write any pending output to stdout, then do your prt and immediately flush_err() which also flushes from the output_space but to stderr.
+If you want to write to stderr, you can use flush_err(), which also flushes from the output_space but to stderr instead of stdout.
+(You may need to do a flush() before the call to prt() if you already have pending output that needs to go to stdout.)
 */
 
 typedef struct {
@@ -201,6 +218,8 @@ void flush_err();
 void flush_to(char*);
 void write_to_file(span content, const char* filename);
 span read_file_into_span(char *filename, span buffer);
+span read_file_S_into_span(span filename, span buffer);
+span read_file_into_cmp(span filename);
 void redir(span);
 span reset();
 void w_char_esc(char);
@@ -242,7 +261,9 @@ void span_arena_free();
 void span_arena_push();
 void span_arena_pop();
 
-
+span inp_compl();
+span cmp_compl();
+span out_compl();
 /* input statistics on raw bytes; span basics */
 
 int counts[256] = {0};
@@ -306,11 +327,21 @@ span S(char *s) {
   return ret;
 }
 
-char* s(char* buf, int n, span s) {
+char* s_buffer(char* buf, int n, span s) {
   size_t l = (n - 1) < len(s) ? (n - 1) : len(s);
   memmove(buf, s.buf, l);
   buf[l] = '\0';
   return buf;
+}
+
+char* s(span s) {
+  if (len(s) && s.end[-1] == '\0') return (char*)s.buf;
+  char* ret = (char*)cmp.end;
+  prt2cmp();
+  wrs(s);
+  w_char('\0');
+  prt2std();
+  return ret;
 }
 
 void read_and_count_stdin() {
@@ -321,7 +352,7 @@ void read_and_count_stdin() {
     counts[c]++;
     *inp.buf = c;
     inp.buf++;
-    if (len(inp) == BUF_SZ) exit(1);
+    if (len(inp) == BUF_SZ) { prt("input overflow\n"); flush_err(); exit(1); }
   }
   inp.end = inp.buf;
   inp.buf = input_space;
@@ -346,6 +377,9 @@ span reset() {
 // set if debugging some crash
 const int ALWAYS_FLUSH = 0;
 
+// Note: this doesn't swap out_space, which means manual comparisons with out_space + BUF_SZ will be broken?
+// probably an argument for the "thran"
+// actually we should just be using out.buf + BUF_SZ anyway I suppose
 void swapcmp() { span swap = cmp; cmp = out; out = swap; int swpn = cmp_WRITTEN; cmp_WRITTEN = out_WRITTEN; out_WRITTEN = swpn; }
 void prt2cmp() { /*if (out.buf == output_space)*/ swapcmp(); }
 void prt2std() { /*if (out.buf == cmp_space)*/ swapcmp(); }
@@ -365,6 +399,26 @@ void prt(const char * fmt, ...) {
   }
   va_end(ap);
   if (ALWAYS_FLUSH) flush();
+}
+
+span prs(char * fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  span ret = { .buf = cmp.end };
+  char *buffer;
+  // we used to use vsprintf here, but that adds a null byte that we don't want
+  int n = vasprintf(&buffer, fmt, ap);
+  if (BUF_SZ < len(cmp) + n) {
+    printf("CMP OVERFLOW (%d)\n", len(cmp) + n);
+    exit(7);
+  }
+  memcpy(cmp.end, buffer, n);
+  free(buffer);
+  cmp.end += n;
+  va_end(ap);
+  if (ALWAYS_FLUSH) flush();
+  ret.end = cmp.end;
+  return ret;
 }
 
 void terpri() {
@@ -518,9 +572,15 @@ void exit_with_error(char *error_message) {
   exit(EXIT_FAILURE);
 }
 
+span read_file_into_cmp(span filename) {
+  span ret = read_file_S_into_span(filename, cmp_compl());
+  cmp.end = ret.end;
+  return ret;
+}
+
 span read_file_S_into_span(span filename, span buffer) {
   char path[2048];
-  s(path,2048,filename);
+  s_buffer(path,2048,filename);
   return read_file_into_span(path, buffer);
 }
 
@@ -659,6 +719,17 @@ span trim(span s) {
   while (len(s) && isspace((unsigned char)*s.buf)) s.buf++;
   while (len(s) && isspace((unsigned char)*(s.end - 1))) s.end--;
   return s;
+}
+
+span concat(span a, span b) {
+  // XXX this approach is incompatible with prt2cmp being already used before the call; need a rethink here
+  span ret = {cmp.end};
+  prt2cmp();
+  wrs(a);
+  wrs(b);
+  prt2std();
+  ret.end = cmp.end;
+  return ret;
 }
 /* next_line(span*) shortens the input span and returns the first line as a new span.
 The newline is consumed and is not part of either the returned span or the input span after the call.
@@ -1056,78 +1127,11 @@ json json_key(span s, json o) {
     if (*(o.s.buf++) != ',') return nulljson();
     skip_whitespace(&o.s);
   }
+  return nulljson();
 }
 
 json make_json(span s) { return (json){s}; }
 
-/*
-json_parse returns a json if the span contains valid JSON with whitespace stripped
-otherwise it returns a null json
-
-ChatGPT4's idea, but see next block:
-
-1. **Function Prototype**:
-   The `json_parse` function will take a `span` representing the JSON data and will return a `json` type object. The exact structure of `json` isn't defined here, so I'll assume a generic structure that can handle JSON primitives (strings, numbers, booleans, null) and structures (arrays, objects).
-
-2. **Error Handling**:
-   Given the lack of exceptions in C, error handling should be robust, returning a nullable `json` (possibly `nullspan()` to indicate parsing failure). This will allow us to handle malformed input gracefully.
-
-3. **Buffer Management**:
-   Ensure that all operations adhere to the span-oriented operations, minimizing reliance on null-terminated strings unless interfacing with external libraries that require them.
-
-4. **Incremental Parsing**:
-   Implement a state machine or a recursive descent parser to handle JSON's hierarchical structure. This would involve functions to parse objects, arrays, strings, numbers, and other primitives. The parser should be able to handle nested objects and arrays recursively or iteratively.
-
-5. **Whitespace and Format Handling**:
-   As JSON allows for whitespace between tokens, the parser should correctly skip whitespace where appropriate. Utilize `trim()` to manage spaces around tokens.
-
-6. **Utilities and Helpers**:
-   Develop helper functions such as `parse_number`, `parse_string`, `parse_array`, and `parse_object`. These functions would be called as needed when the main parsing function encounters the corresponding opening characters ('{', '[', etc.).
-
-7. **Unicode and Escaping**:
-   JSON string parsing must handle escaped characters and unicode symbols correctly. Implement or utilize existing functions like `w_char_esc` to decode these sequences.
-
-8. **Performance Considerations**:
-   Since JSON parsing can be computationally intensive, especially for large strings, ensure that the parser is optimized for speed and memory usage, perhaps by using span manipulations effectively to avoid unnecessary copying.
-
-9. **Integration with Span Functions**:
-   Utilize span-related functions like `find_char`, `next_line`, and `contains` to implement parsing logic, ensuring that the parser remains consistent with the `spanio` library's methodology.
-
-10. **Testing**:
-   Implement rigorous unit tests to cover typical JSON structures as well as edge cases like deeply nested objects, large arrays, and malformed JSON to ensure that the parser is robust.
-
-Here’s a skeletal structure for the function:
-
-```c
-json json_parse(span input) {
-    trim(input);  // Remove leading/trailing whitespace
-    if (empty(input)) {
-        return nullspan();  // Return null json for empty input
-    }
-
-    // Depending on the first non-space character, call the appropriate function
-    switch (*input.buf) {
-        case '{':
-            return parse_object(input);
-        case '[':
-            return parse_array(input);
-        case '\"':
-            return parse_string(input);
-        case 't': case 'f':  // true or false
-            return parse_boolean(input);
-        case 'n':  // null
-            return parse_null(input);
-        default:
-            if (isdigit(*input.buf) || *input.buf == '-' || *input.buf == '+') {
-                return parse_number(input);
-            }
-            break;
-    }
-
-    return nullspan();  // Return null if none of the valid JSON starting characters are found
-}
-```
-*/
 /*
 The `json_parse` function takes a `span` representing the JSON data and returns a `json` type object, unless the parse failed or did not consume the entire input (excepting whitespace) in which case it returns nulljson().
 */

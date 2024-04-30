@@ -7,17 +7,13 @@
 
 cat <<EOF
 We are writing cmpr, which is a tool to interact with LLMs and is written in C.
+
+Here is information about spanio, the library we are using:
+
+Note that spanio and all needed system header files are already included elsewhere, so don't include header files in your reply.
 EOF
 
-# moved this to the end
-#cat <<EOF
-#Here is information about spanio, the library we are using:
-#
-#Note that spanio is already included, so don't include header files (ever, for it or anything else).
-#EOF
-#
-#cmpr --print-block $(cmpr --find-block "#libraryintro")
-
+cmpr --print-block $(cmpr --find-block "#libraryintro")
 
 # experimenting with leaving out the ctags, since our library intro and #all_functions should be sufficient
 
@@ -36,33 +32,26 @@ EOF
 #\`\`\`
 
 cat <<EOF
+That is the end of the spanio library; now we describe our program, cmpr.
 
-We have a few globals; to those already part of spanio (inp, out, cmp, etc.) we add state, a pointer to the ui_state struct, automatically available everywhere:
+We have a few globals; to those already part of spanio (inp, out, cmp, etc.) we add \`state\`, a pointer to the \`ui_state\` struct, automatically available everywhere; the definition of \`ui_state\` is provided below, along with our config fields and the projfile struct.
+
 EOF
 
-cmpr --print-block $(cmpr --find-block "#config_fields")
+cmpr --print-code $(cmpr --find-block "#config_fields")
 cmpr --print-code $(cmpr --find-block "#ui_state")
-cmpr --print-block $(cmpr --find-block "#projfiles")
+cmpr --print-code $(cmpr --find-block "#projfiles")
 
-echo "Here's all the functions we have implemented so far:\n\n\`\`\`c"
+cat <<EOF
+The projfiles type is created by MAKE_ARENA and has the methods defined for our generic array types (with element type projfile).
+In particular, we use projfiles_alloc with a sufficient capacity in main() and then we use projfiles_push() whenever we populate a project file.
+EOF
+
+echo "Here are the declarations of all our functions:\n\n\`\`\`c"
 
 cmpr --print-code $(cmpr --find-block "#all_functions")
 
 echo "\`\`\`"
-echo
+echo "Reply with \"OK\"."
 
-cat <<EOF
-Here is information about spanio, the library we are using:
-
-Note that spanio is already included, so don't include header files (ever, for it or anything else).
-EOF
-
-cmpr --print-block $(cmpr --find-block "#libraryintro")
-
-cat <<EOF
-
-The projfiles type is created by MAKE_ARENA and has the methods defined for our generic array types (with element type projfile).
-In particular, we use projfiles_alloc with a sufficient capacity in main() and then we use projfiles_push() whenever we populate a project file.
-
-In the library intro above there are some idioms and advice given at the very end. Extremely briefly, summarize these in bullet form, starting with "- spans uses .s not .a".
-EOF
+#In the library intro above there are some idioms and advice given at the very end. Extremely briefly, summarize these in bullet form, starting with "- spans uses .s not .a".

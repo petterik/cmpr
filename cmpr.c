@@ -1,3 +1,11 @@
+/* test block
+Here we have a function int add(int, int).
+*/
+
+int add(int a, int b) {
+    return a + b;
+}
+
 /* import libraries 
 */
 
@@ -7,12 +15,17 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <curl/curl.h>
 
 typedef uint64_t u64;
 
 #define flush_exit(n) flush(); exit(n)
 
+
+/* Historical libcurl API implementation
+
+#include <curl/curl.h>
+
+*/
 /*
 We record the request and response so we can calculate the cost.
 
@@ -85,31 +98,27 @@ We define CONFIG_FIELDS including all our known config settings, as they are use
 
 The config settings are:
 
-- projdir, location of the project directory that we are working with as a span
-- revdir, a span containing a relative or absolute path to where we store our revisions
-- tmpdir, another path for temp files that we use for editing blocks
 - cmprdir, the directory for project state, usually .cmpr
 - buildcmd, the command to do a build (e.g. by the "B" key)
 - bootstrap, a command that creates an initial prompt (see README)
 - cbcopy, the command to pipe data to the clipboard on the user's platform
 - cbpaste, the same but for getting data from the clipboard
+- curlbin, the path to curl (or just "curl" if unspecified)
 - model, the LLM currently in use, one of "gpt-3.5-turbo", "gpt-4-turbo", "clipboard"
 */
 
 #define CONFIG_FIELDS \
-    X(projdir) \
-    X(revdir) \
-    X(tmpdir) \
     X(cmprdir) \
     X(buildcmd) \
     X(bootstrap) \
     X(cbcopy) \
     X(cbpaste) \
+    X(curlbin) \
     X(model)
 
 /* #projfiles
 
-A project can contain multiple files.
+A project usually contains multiple files.
 
 We have a projfile type which contains for each file:
 
@@ -198,7 +207,8 @@ void keyboard_help();
 // LLM APIs
 void read_openai_key();
 network_ret call_gpt(json messages, span model); // OpenAI API entry point
-network_ret call_gpt_network(json); // network helper function
+//network_ret call_gpt_network(json); // network helper function
+network_ret call_gpt_curl(span,span,span); // network helper function
 
 // setup and startup
 void handle_args(int argc, char **argv);
@@ -227,9 +237,14 @@ span comment_to_prompt(span comment);
 span strip_markdown_codeblock(span);
 void send_to_clipboard(span prompt);
 int file_for_block(span block);
+span current_block_language();
 void replace_block_code_part(span new_code);
 int launch_editor(char* filename);
 void handle_edited_file(char* filename);
+span tmp_filename(); // used by 'e' edit command
+void new_rev(span, int); // save a new file revision after any change to a block in that file
+void update_projfile(int, span, span); // copies a rev into place over an existing file
+int copy_file(const char*, const char*);
 
 span pipe_cmd_cmp(span); // should probably be a library method
 
@@ -246,13 +261,14 @@ int find_block(span);
 // ex commands
 void start_ex();
 void handle_ex_command();
-void gen_bootstrap();
 void bootstrap();
 void addfile(span);
 void addlib(span);
 void ex_help();
 void set_highlight();
 void reset_highlight();
+void print_menu();
+int select_menu(spans opts, int sel); // allows selecting from a short list of options
 void select_model();
 
 // ingest
@@ -279,8 +295,6 @@ void print_block(int);
 void print_comment(int);
 void print_code(int);
 int count_blocks();
-char* tmp_filename(); // used by 'e' edit command
-void new_rev(char*, int); // new file revision saved after any change to a block
 /* #main
 
 In main,
@@ -314,9 +328,9 @@ Next we call a function get_code().
 This function either handles reading standard input or it reads the files indicated by our config file.
 In either case, once this returns, inp is populated and any other initial code indexing work is done.
 
-Next we call get_revs(), which handles reading and indexing all of our revisions (in revdir).
+Next we call get_revs(), which handles reading and indexing all of our revisions (in <cmprdir>/revs).
 
-We call gen_bootstrap(), which updates the bootstrap prompt.
+We call bootstrap(), which updates the bootstrap prompt.
 
 Then we call main_loop().
 
@@ -343,7 +357,7 @@ int main(int argc, char** argv) {
     check_dirs();
     get_code();
     get_revs();
-    //gen_bootstrap();
+    bootstrap();
     main_loop();
 
     flush();
@@ -396,6 +410,130 @@ void read_openai_key() {
 }
 /* #call_gpt
 
+Here we talk to an OpenAI model via the API.
+
+We are given a json (the type) which contains an array of messages, and a span which contains a model string, and return network_ret.
+
+Next we set up a json object.
+We use prt2cmp() so that the json object will be written to cmp space.
+Using the json api functions, we make a json object and extend it with "messages" as the messages and with "model" as json_s of the model string, then go back to normal with prt2std().
+
+We will write the request body and response or error to disk, so first we set up three filenames.
+The filename is <cmprdir>/api_calls/<timestamp>-{req,resp,err} where cmprdir comes from state and the timestamp is in the format YYYYMMDD-hhmmss.
+The three filenames (-req, -resp, and -err) all have the same timestamp, which lets us correlate them later.
+To construct them we set up a base filename first and then append the req, resp, err to it in turn.
+
+We write the request body to disk, without clobbering as it should not exist, then we call call_gpt_curl to handle the HTTP request, passing in the three filename spans, and we return what it returns.
+*/
+
+network_ret call_gpt(json messages, span model) {
+    span base_filename, req_filename, resp_filename, err_filename;
+    char timestr[20];
+    struct timespec ts;
+    network_ret net_result;
+
+    // Use current time to generate unique filenames
+    clock_gettime(CLOCK_REALTIME, &ts);
+    strftime(timestr, sizeof(timestr), "%Y%m%d-%H%M%S", localtime(&ts.tv_sec));
+
+    // Set up filenames for request, response, error
+    base_filename = concat(state->cmprdir, S("/api_calls/"));
+    base_filename = concat(base_filename, S(timestr));
+    req_filename = concat(base_filename, S("-req"));
+    resp_filename = concat(base_filename, S("-resp"));
+    err_filename = concat(base_filename, S("-err"));
+
+    // Switch to cmp arena for json object construction
+    prt2cmp();
+
+    // Construct json object for API request
+    json j = json_o();
+    json_o_extend(&j, S("messages"), messages);
+    json_o_extend(&j, S("model"), json_s(model));
+
+    // Switch back to standard output arena
+    prt2std();
+
+    // Write request body to file
+    write_to_file_span(j.s, req_filename, 0);
+
+    // Call the network layer via curl wrapper function
+    net_result = call_gpt_curl(req_filename, resp_filename, err_filename);
+
+    return net_result;
+}
+
+/* #call_gpt_curl
+
+This is the network part of call_gpt().
+
+We get three filenames, req, resp, and err, respectively, and we return a network_ret.
+
+The HTTP request body as a JSON object has already been written into the req file.
+
+We handle the communication by calling curl.
+We put the binary name in a span, either state->curlbin, or just "curl" if that is empty.
+
+Next we construct a curl command.
+
+We need to tell curl:
+- to be silent except in case of error with -sS,
+- the name of the file with the JSON payload,
+- to set the content-type header,
+- to use the API key (Bearer token) which is in state->openai_key, something like "Authorization: Bearer <key>",
+- to put the output into the resp file,
+- the API endpoint,
+- and finally to redirect stderr to the err file.
+
+We put the command together with snprintf.
+As always, to print any span x we use `%.*s`, with corresponding arguments len(x) and x.buf.
+
+Don't forget to quote HTTP headers when composing the curl command with -H to protect them from being split by the shell.
+
+Our return value is a network_ret, declared above, which either has success = 1 and the .response contains the body of the API response or success = 0 and .error contains a human-readable error message.
+
+If the openai_key is empty, we report this on .error and return a network_ret with success = 0.
+
+We read the contents of the resp file with read_file_into_cmp and set this on .response.
+If the curl command returned non-zero, we also read the contents of the err file into .err.
+We always read the resp file, even in cases of error.
+
+API endpoint: "https://api.openai.com/v1/chat/completions"
+*/
+
+network_ret call_gpt_curl(span req, span resp, span err) {
+    char cmd[1024];
+    if (empty(state->openai_key)) {
+        return (network_ret){0, nullspan(), S("No API key provided.")};
+    }
+
+    char *curl_bin = empty(state->curlbin) ? "curl" : s(state->curlbin);
+    snprintf(cmd, sizeof(cmd), 
+        "%s -sS -X POST -H \"Content-Type: application/json\" -H \"Authorization: Bearer %.*s\" "
+        "-d @%.*s --output %.*s --url https://api.openai.com/v1/chat/completions 2>%.*s", 
+        curl_bin, 
+        len(state->openai_key), state->openai_key.buf, 
+        len(req), req.buf, 
+        len(resp), resp.buf, 
+        len(err), err.buf
+    );
+
+    int result = system(cmd);
+    network_ret net_result;
+    net_result.response = read_file_into_cmp(resp);
+
+    if (result != 0) {
+        net_result.success = 0;
+        net_result.error = read_file_into_cmp(err);
+    } else {
+        net_result.success = 1;
+    }
+
+    return net_result;
+}
+
+/* (historical) call_gpt libcurl approach
+
 Here we talk to the OpenAI models via the API.
 
 We are given a json (the type) which contains an array of messages, and a span which contains a model string, and return network_ret.
@@ -409,7 +547,6 @@ We write the request body and the response or error to disk using write_to_file_
 The filename is <cmprdir>/api_calls/<timestamp>{-req,-resp,-err} where cmprdir comes from state and the timestamp is in the format YYYYMMDD-hhmmss.
 
 Note: recall the %.*s pattern when printing spans with prt.
-*/
 
 network_ret call_gpt(json messages, span model) {
     prt2cmp();
@@ -441,7 +578,10 @@ network_ret call_gpt(json messages, span model) {
     
     return result;
 }
-/* #call_gpt_network
+*/
+/* (historical) call_gpt_network
+
+Historical libcurl-based implementation.
 
 This is the network part of call_gpt().
 
@@ -462,7 +602,8 @@ API endpoint: "https://api.openai.com/v1/chat/completions"
 The API key (Bearer token) is in state->openai_key, use something like:
     char auth_header[256];
     sprintf(auth_header, "Authorization: Bearer %.*s", len(state->openai_key), state->openai_key.buf);
-*/
+
+// historical implementation:
 
 size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total_size = size * nmemb;
@@ -515,6 +656,7 @@ network_ret call_gpt_network(json request_json) {
 
     return ret;
 }
+*/
 /* #print_config
 
 Debugging helper.
@@ -956,6 +1098,8 @@ We have an average line length of 39 bytes in our code to date, so we would expa
 /* #get_revs
 
 */
+
+void get_revs() {}
 /*
 In find_blocks_language_python, we get a span containing a file.
 
@@ -1315,7 +1459,7 @@ void page_down() {
 
     block_copy.buf = scrolled_off.end;
     int lines_for_screen = content_rows;
-    span remainder = count_physical_lines(block_copy, &lines_for_screen);
+    //span remainder = count_physical_lines(block_copy, &lines_for_screen);
 
     if (lines_for_screen > 0) {
         state->scrolled_lines -= lines_for_screen;
@@ -1628,7 +1772,7 @@ We write declarations for the helper functions (which we define below).
 
 void start_search() {
     static char search_buffer[256] = {"/"}; // Static buffer for search, pre-initialized with "/"
-    state->search = (span){.buf = search_buffer, .end = search_buffer + 1}; // Initialize search span to contain just "/"
+    state->search = (span){.buf = (u8*)search_buffer, .end = (u8*)search_buffer + 1}; // Initialize search span to contain just "/"
 
     perform_search(); // Perform initial search display/update
 
@@ -1800,88 +1944,133 @@ void reset_highlight() {
     prt("\033[0m");
 }
 
-/* #select_model
+/* #print_menu
 
-In select_model we show the user a list of LLMs.
+Here we show the user a list of a small number options, with the currently selected one highlighted.
 
-Currently the list is hardcoded to "gpt-3.5-turbo" and "gpt-4-turbo" and "clipboard".
+Our arguments are a spans containing the options and a currently selected index into it.
 
-(Later we will allow configuration of other models).
+We clear the display, print the options, highlighting the selected one, and then print a message:
 
-When we enter the function, if state->model is unset we set it to "clipboard" as the default.
+"Use j/k or Up/Down to move and Enter to select."
 
-We clear the display, enter a loop with getch, handle j/k and enter for selecting, and Esc to do nothing.
-We ignore any other keyboard input for now.
-
-We have helper functions for terminal highlighting.
-
-The initially selected option should be the one that matches state->model.
-
-Also when we return we call save_conf to store any change back to the conf file.
-
-Reminder: never write `const`.
-
-We start with a helper function print_models.
+We have helper functions to set and reset highlighting and to clear the display.
 */
 
-void print_models(int selected) {
-    char *models[] = {"gpt-3.5-turbo", "gpt-4-turbo", "clipboard"};
-    int num_models = sizeof(models) / sizeof(models[0]);
+void print_menu(spans options, int selected_index) {
+    clear_display();
 
-    for (int i = 0; i < num_models; i++) {
-        if (i == selected) {
+    for (int i = 0; i < options.n; ++i) {
+        if (i == selected_index) {
             set_highlight();
-            prt("%s\n", models[i]);
+            prt("%.*s\n", len(options.s[i]), options.s[i].buf);
             reset_highlight();
         } else {
-            prt("%s\n", models[i]);
+            prt("%.*s\n", len(options.s[i]), options.s[i].buf);
         }
     }
+
+    prt("Use j/k or Up/Down to move and Enter to select.\n");
     flush();
 }
 
-void select_model() {
-    if (empty(state->model)) {
-        state->model = S("clipboard");
-    }
+/* #select_menu
 
-    int current_selection = 0;
-    char *models[] = {"gpt-3.5-turbo", "gpt-4-turbo", "clipboard"};
-    int num_models = sizeof(models) / sizeof(models[0]);
+In select_menu we allow the user to choose from a small list of options passed in as a spans.
+The currently selected option is passed in as an int.
 
-    for (int i = 0; i < num_models; i++) {
-        if (span_eq(state->model, S(models[i]))) {
-            current_selection = i;
-            break;
-        }
-    }
+We have a helper function print_menu which takes a spans of the options and a currently selected index and handles the screen updates.
 
-    clear_display();
-    print_models(current_selection);
+We enter a loop, handle j/k and up/down arrow keys to highlight and enter for selecting.
 
-    char ch;
-    while ((ch = getch()) != 27) { // Esc key to exit
+Recall that arrow keys are represented as multiple characters of input so you'll need to maintain some state to handle them correctly.
+In particular, if you ever write something like '\033[B' it won't compile, so use nested calls to getch(), or maintain a small state machine as an int.
+
+We return the index of the user's selection.
+*/
+
+int select_menu(spans options, int selected_index) {
+    int ch;
+    int state = 0;
+    print_menu(options, selected_index);
+    while ((ch = getch())) {
         switch (ch) {
+            case '\033':
+                state = 1;
+                break;
+            case '[':
+                if (state == 1) state = 2;
+                break;
+            case 'A': // up arrow
+                if (state == 2 && selected_index > 0) {
+                    selected_index--;
+                    print_menu(options, selected_index);
+                }
+                state = 0;
+                break;
+            case 'B': // down arrow
+                if (state == 2 && selected_index < options.n - 1) {
+                    selected_index++;
+                    print_menu(options, selected_index);
+                }
+                state = 0;
+                break;
             case 'j':
-                if (current_selection < num_models - 1) {
-                    current_selection++;
-                    clear_display();
-                    print_models(current_selection);
+                if (selected_index < options.n - 1) {
+                    selected_index++;
+                    print_menu(options, selected_index);
                 }
                 break;
             case 'k':
-                if (current_selection > 0) {
-                    current_selection--;
-                    clear_display();
-                    print_models(current_selection);
+                if (selected_index > 0) {
+                    selected_index--;
+                    print_menu(options, selected_index);
                 }
                 break;
-            case '\n': // Enter key
-                state->model = S(models[current_selection]);
-                save_conf();
-                return;
+            case '\n': // enter key
+                return selected_index;
+            default:
+                state = 0;
+                break;
         }
     }
+    return selected_index;
+}
+
+/* #select_model
+
+Here we allow the user to select the model.
+
+We set up a spans and the currently selected index and then call select_menu.
+
+Currently the list is hardcoded to "gpt-3.5-turbo" and "gpt-4-turbo" and "clipboard".
+
+When we enter the function, if state->model is unset we set it to "clipboard" as the default.
+
+The initially selected option should be the one that matches state->model.
+
+When select_menu returns we update state->model and call save_conf to store any change back to the conf file.
+
+Recall that we never, ever write "const" in C.
+*/
+
+void select_model() {
+    span models[] = {S("gpt-3.5-turbo"), S("gpt-4-turbo"), S("clipboard")};
+    spans model_spans = {models, 3};
+    int selected_index = 2; // default to "clipboard"
+
+    if (!empty(state->model)) {
+        for (int i = 0; i < model_spans.n; i++) {
+            if (span_eq(model_spans.s[i], state->model)) {
+                selected_index = i;
+                break;
+            }
+        }
+    }
+
+    selected_index = select_menu(model_spans, selected_index);
+    state->model = model_spans.s[selected_index];
+    save_conf();
 }
 
 /* #bootstrap
@@ -1901,7 +2090,7 @@ void bootstrap() {
     ensure_conf_var(&state->bootstrap, S("The bootstrap command generates your initial prompt on stdout. See README for details."), nullspan());
     
     char buf[2048] = {0};
-    s(buf, sizeof(buf), state->bootstrap);
+    s_buffer(buf, sizeof(buf), state->bootstrap);
     prt("Running bootstrap command: %s\n", buf);
     flush();
 
@@ -2031,18 +2220,20 @@ span next_line_limit(span* s, int n) {
     return result;
 }
 
-/*
+/* #print_ruler
+
 In print_ruler we use prt to show
 
 - the number of blocks,
 - the currently selected block,
 - the scrolled lines plus one (i.e. the one-based index of the top visible line)
-- the filename of the current block (get the block by state->current_index, the file by file_for_block, and the file path from the projfile at that index on state). Note that 0 <= current_index < state->blocks.n is an invariant, and we don't need to check for it, but rather simply assume it here, indexing into blocks directly.
-- the currently selected LLM (state->model).
+- the filename of the current block (get the block by state->current_index, the file by file_for_block, and the file path from the projfile at that index on state). Note that 0 <= current_index < state->blocks.n is an invariant, and we don't need to check for it, but rather simply assume it here, indexing into blocks directly,
+- the currently selected LLM (state->model),
+- a short note "? for help".
 
 all on a line without a newline.
 
-Our output reads as "Block n/N, Line L, File <path>, Model <model>", using the `%.*s` pattern for the filepath and the model.
+Our output reads as "Block n/N, Line L, File <path>, Model <model>, ? for help", using the `%.*s` pattern for the filepath and the model.
 */
 
 void print_ruler() {
@@ -2050,9 +2241,9 @@ void print_ruler() {
     int file_index = file_for_block(current_block);
     projfile current_file = state->files.a[file_index];
     char path_buf[2048] = {0}; // Assuming path lengths won't exceed 2047 characters + null terminator
-    s(path_buf, 2048, current_file.path);
+    s_buffer(path_buf, 2048, current_file.path);
 
-    prt("Block %d/%d, Line %d, File %s, Model: %.*s", state->current_index + 1, state->blocks.n, state->scrolled_lines + 1, path_buf, len(state->model), state->model);
+    prt("Block %d/%d, Line %d, File %s, Model: %.*s, ? for help", state->current_index + 1, state->blocks.n, state->scrolled_lines + 1, path_buf, len(state->model), state->model);
 }
 /*
 In print_single_block_with_skipping we get a block index and a pagination index in the form of a number of lines already "scrolled off" above the top of the screen (skipped_lines).
@@ -2480,7 +2671,7 @@ If it is not creatable, writable by the user, etc, we will report the error, wai
 
 int add_projfile(span file_path_span) {
     char file_path[2048] = {0};
-    s(file_path, 2048, file_path_span);
+    s_buffer(file_path, 2048, file_path_span);
 
     FILE *file = fopen(file_path, "a+");
     if (file == NULL) {
@@ -2513,13 +2704,13 @@ void check_dirs() {
     int n = sizeof(dirs) / sizeof(char*);
 
     for (int i = 0; i < n; i++) {
-        s(buf, 1024, state->cmprdir);
+        s_buffer(buf, 1024, state->cmprdir);
         int l = len(state->cmprdir);
         if (buf[l - 1] != '/') {
             buf[l] = '/';
             l++;
         }
-        s(buf + l, 1024 - l, S((char *)dirs[i]));
+        s_buffer(buf + l, 1024 - l, S((char *)dirs[i]));
         
         if (mkdir(buf, 0777) && errno != EEXIST) {
             prt("Failed to create directory %s\n", buf);
@@ -2645,19 +2836,11 @@ void ensure_conf_var(span* var, span message, span default_value) {
 
 /* #edit_current_block
 
+To edit the current block we first write it out to a file.
 
+We get the filename from tmp_filename, and write the contents with write_to_file_span, without clobbbering since the file should not exist.
 
-
-
-
-
-
-
-
-
-To edit the current block we first write it out to a file, which we do with a helper function write_to_file(span, char*).
-
-We write the block, which is a span at state->current_index on state.blocks.
+The block contents is a span at state->current_index on state.blocks.
 
 Once the file is written, we then launch the user's editor of choice on that file, which is handled by another helper function.
 
@@ -2665,67 +2848,56 @@ That function will wait for the editor process to exit, and will indicate to us 
 
 If so, then we call another function which will then read the edited file contents back in and handle storing the new version.
 
-If not, we print a short message to let the user know their changes were ignored.
-We let the user press any key before returning to the main loop.
+If not, we print a short message to let the user know their changes were ignored because of the editor exit code, and let them press any key before returning to the main loop.
 */
 
 void edit_current_block() {
-  if (state->current_index >= 0 && state->current_index < state->blocks.n) {
-    char* filename = tmp_filename();
-    write_to_file(state->blocks.s[state->current_index], filename);
-    int editor_exit_code = launch_editor(filename);
-
-    if (editor_exit_code == 0) {
-      handle_edited_file(filename);
+    span block = state->blocks.s[state->current_index];
+    char* filename = s(tmp_filename());
+    write_to_file_span(block, S(filename), 0);
+    int editor_status = launch_editor(filename);
+    if (editor_status == 0) {
+        handle_edited_file(filename);
     } else {
-      prt("Editor exited abnormally. Changes might not be saved.\n");
+        prt("Editor exited with error, changes not saved.\n");
+        flush();
+        getch();
     }
-
-    free(filename);
-  }
 }
 
-/*
-To generate a tmp filename for launching the user's editor, we return a string starting with state->tmpdir.
+/* #tmp_filename
+To generate a tmp filename for launching the user's editor, we return a string starting with state->cmprdir followed by "/tmp/".
 For the filename part, we construct a timestamp in a compressed ISO 8601-like format, as YYYYMMDD-hhmmss with just a single dash as separator.
 We append a file extension: we use file_for_block and current_block to get the language for the current block and add the appropriate extension, switching on the language and adding the appropriate filename extension from #langtable above.
 We are assure here that the language will be already set for every file, so if it is not recognized, it's acceptable to either crash (as this is a programming error) or simply to do nothing and carry on with no extension on added.
 (The only thing we don't want to do is add something ridiculous like ".txt".)
-We return a char* which the caller must free.
-Since state->tmpdir may or may not include a trailing slash we test for and handle both cases.
+Note that state->cmprdir may or may not include a trailing slash in the conf file, but by the time we get it here, any trailing slash will have already been removed.
+We return a static buffer, so the caller does not need to free it.
 */
 
-char* tmp_filename() {
+span tmp_filename() {
     time_t now = time(NULL);
     struct tm *tm_struct = localtime(&now);
-
-    char timestamp[20]; // YYYYMMDD-hhmmss
+    char timestamp[20];
     strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", tm_struct);
-
-    char extension[5]; // Up to 4 chars + null terminator
-    span language = state->current_language;
-    if (span_eq(language, S("C"))) {
-        snprintf(extension, sizeof(extension), ".c");
-    } else if (span_eq(language, S("Python"))) {
-        snprintf(extension, sizeof(extension), ".py");
-    } else if (span_eq(language, S("JavaScript"))) {
-        snprintf(extension, sizeof(extension), ".js");
-    } else {
-        extension[0] = '\0'; // No recognized language, no extension.
+    
+    span current_language = current_block_language();
+    char* extension = "";
+    if (span_eq(current_language, S("C"))) {
+        extension = ".c";
+    } else if (span_eq(current_language, S("Python"))) {
+        extension = ".py";
+    } else if (span_eq(current_language, S("JavaScript"))) {
+        extension = ".js";
+    } else if (span_eq(current_language, S("Markdown"))) {
+        extension = ".md";
     }
 
-    int tmpdir_len = len(state->tmpdir);
-    int needs_slash = (state->tmpdir.buf[tmpdir_len - 1] != '/');
-    int filename_len = tmpdir_len + needs_slash + sizeof(timestamp) + sizeof(extension);
-    char *filename = malloc(filename_len);
-    if (needs_slash) {
-        snprintf(filename, filename_len, "%.*s/%s%s", tmpdir_len, state->tmpdir.buf, timestamp, extension);
-    } else {
-        snprintf(filename, filename_len, "%.*s%s%s", tmpdir_len, state->tmpdir.buf, timestamp, extension);
-    }
-
-    return filename;
+    static char filename[1024];
+    snprintf(filename, sizeof(filename), "%s/tmp/%s%s", s(state->cmprdir), timestamp, extension);
+    return S(filename);
 }
+
 /*
 In launch_editor, we are given a filename and must launch the user's editor of choice on that file, and then wait for it to exit and return its exit code.
 
@@ -2783,6 +2955,17 @@ int file_for_block(span block) {
     flush();
     exit(EXIT_FAILURE);
 }
+
+/* #current_block_language
+
+Here we get the currently selected block (state->current_index) and then get the file for that block (file_for_block()) and return the .language on the corresponding projfile on state->files.
+*/
+
+span current_block_language() {
+    int file_index = file_for_block(state->blocks.s[state->current_index]);
+    return state->files.a[file_index].language;
+}
+
 /* handle_edited_file
 
 Here we are given a tmp file containing new contents of a block.
@@ -2870,76 +3053,157 @@ void handle_edited_file(char* filename) {
     find_all_blocks();
 
     // Creating a new revision and cleaning up
-    new_rev(filename, file_index);
+    new_rev(S(filename), file_index);
 }
 
 /* #new_rev
 
-Here we store a new revision, given a filename which contains a block that was edited and the index of the projfile that contains that block.
-The file contents have already been processed, we just get the name so that we can clean up the file when done.
+Here we store a new revision, given a tmp filename which contains a block that was edited and the index of the projfile that contains that block.
+The file contents have already been read in and processed, we just get the name so that it can be cleaned up.
 
-Our conf var revdir tells us where to put the new file that we are going to write.
-We don't assume that the conf var ends in a slash, so we test for that and handle both cases.
+First we construct a path for the new rev, like <cmprdir>/revs/<timestamp>, where cmprdir is a conf var on state, and the timestamp is an ISO 8601-style compact timestamp like 20240501-210759.
+We then write the contents of the projfile into this file (the "rev") using write_to_file().
+The projfile.contents (which is on state->files) already contains the current contents that we want to write out.
 
-First we construct a path starting with revdir and ending with an ISO 8601-style compact timestamp like 20240501-210759.
-We then write the contents of the projfile (which has already been updated) into this file (the "rev") using write_to_file().
-
-We create a copy of this file at the path for the projfile.
-The file there which may have been edited and contain unsaved changes by some other process.
-So we have a helper function, update_projfile, which takes the projfile index, the path of the rev file, and handles all of this.
-
-Next we call bootstrap(), which wants to process the updated codebase.
-
-Finally we unlink the filename that was passed in, since we have now fully processed it.
-The filename is now optional, since we sometimes also are processing clipboard input, so if it is NULL we skip this step.
-
-Reminder: we never write `const` in C as it only brings pain.
+Once this is all done, we call update_projfile, which handles the rest of the process, using the index, tmp path, and rev path.
+This is the function that will actually replace the projfile, and unlink the tmp file if everything is successful.
 */
 
-void update_projfile(int, char*);
-
-void new_rev(char* filename, int file_index) {
-    char rev_path[1024];
+void new_rev(span tmp_filename, int file_index) {
+    span dir = state->cmprdir;
     time_t now = time(NULL);
-    struct tm *tm_now = localtime(&now);
-    int need_slash = state->revdir.end[-1] != '/';
-    snprintf(rev_path, sizeof(rev_path), "%.*s%s%04d%02d%02d-%02d%02d%02d", 
-             (int)(state->revdir.end - state->revdir.buf), state->revdir.buf,
-             need_slash ? "/" : "",
-             tm_now->tm_year + 1900, tm_now->tm_mon + 1, tm_now->tm_mday,
-             tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec);
+    struct tm *timeinfo = localtime(&now);
+    char timestamp[16];
+    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", timeinfo);
+    
+    span rev_path = concat(concat(dir, S("/revs/")), S(timestamp));
+    write_to_file_span(state->files.a[file_index].contents, rev_path, 1);
+    
+    update_projfile(file_index, tmp_filename, rev_path);
+}
 
-    prt("%s\n", rev_path);flush();
-    write_to_file(state->files.a[file_index].contents, rev_path);
+/* #update_projfile
 
-    update_projfile(file_index, rev_path);
-    //gen_bootstrap();
+We get the index of an updated projfile, a tmp filename containing the new version of that file, which has already been processed, and is only passed in so that we can unlink it when all is successfully completed, and a rev path which contains the new version of that file.
 
-    if (filename) {
-        unlink(filename);
+From state->files we get the path of the projfile (state->files.a[file_index].path).
+Our task is to replace that file with a copy of the new rev, after a few checks.
+
+The file already there may have been edited and contain unsaved changes by some other process.
+Therefore, if there is a file already there (at the projfile location), we rename it, adding ".bak".
+
+We get the permissions of the projfile from the filesystem, as we will want to preserve them (for example, an exec bit may be set).
+
+Then we copy the new rev into the projfile location.
+
+We set the permissions to be equal to whatever we got from the original file.
+
+Finally we unlink the tmp filename that was passed in, since we have now fully processed it.
+The tmp filename is actually optional, since we sometimes also are processing clipboard input, so if it is empty we skip this step.
+
+As usual, if any of these steps goes wrong, we prt, flush, and exit(1).
+Any time we print an error involving a file, we always include both the filename and the OS error message (strerror).
+*/
+
+void update_projfile(int file_index, span tmp_filename, span rev_path) {
+    span projfile_path = state->files.a[file_index].path;
+    char projfile_path_str[2048];
+    s_buffer(projfile_path_str, sizeof(projfile_path_str), projfile_path);
+
+    char rev_path_str[2048];
+    s_buffer(rev_path_str, sizeof(rev_path_str), rev_path);
+
+    struct stat file_stat;
+    if (stat(projfile_path_str, &file_stat) == 0) {
+        char backup_path[2053];
+        snprintf(backup_path, sizeof(backup_path), "%s.bak", projfile_path_str);
+        if (rename(projfile_path_str, backup_path) != 0) {
+            prt("Error backing up file %s: %s\n", projfile_path_str, strerror(errno));
+            flush();
+            exit(1);
+        }
+    } else {
+        prt("Error accessing file %s: %s\n", projfile_path_str, strerror(errno));
+        flush();
+        exit(1);
+    }
+
+    if (copy_file(rev_path_str, projfile_path_str) != 0) {
+        prt("Error copying file from %s to %s: %s\n", rev_path_str, projfile_path_str, strerror(errno));
+        flush();
+        exit(1);
+    }
+
+    if (chmod(projfile_path_str, file_stat.st_mode) != 0) {
+        prt("Error setting permissions on file %s: %s\n", projfile_path_str, strerror(errno));
+        flush();
+        exit(1);
+    }
+
+    if (!empty(tmp_filename)) {
+        char tmp_filename_str[2048];
+        s_buffer(tmp_filename_str, sizeof(tmp_filename_str), tmp_filename);
+        if (unlink(tmp_filename_str) != 0) {
+            prt("Error removing temporary file %s: %s\n", tmp_filename_str, strerror(errno));
+            flush();
+            exit(1);
+        }
     }
 }
 
-void update_projfile(int file_index, char* rev_path) {
-    char projfile_path[1024];
-    snprintf(projfile_path, sizeof(projfile_path), "%.*s", 
-             (int)(state->files.a[file_index].path.end - state->files.a[file_index].path.buf), 
-             state->files.a[file_index].path.buf);
+/*
+The copy_file function copies the contents from one file to another.
+It operates by opening the source file for reading and the destination file for writing.
+The function reads chunks of data into a buffer and writes them out to the destination file, handling potential interruptions due to signals.
+It also performs error checks at each step, including during file opening, reading, and writing.
+If an error occurs, the function closes any open file descriptors and returns a negative error code corresponding to the step where the failure occurred.
+This custom implementation fills a gap in the C Standard Library, which lacks a built-in function for direct file copying.
+*/
 
-    // Check if the projfile exists and handle accordingly
-    struct stat statbuf;
-    if (lstat(projfile_path, &statbuf) == 0) {
-        if (S_ISREG(statbuf.st_mode)) {
-            // If it's a regular file, we might want to back it up before overwriting
-            char backup_path[1024];
-            snprintf(backup_path, sizeof(backup_path), "%s.bak", projfile_path);
-            rename(projfile_path, backup_path);
+int copy_file(const char *src, const char *dest) {
+    int source_fd, dest_fd;
+    ssize_t n_read, n_written;
+    char buffer[4096];
+
+    source_fd = open(src, O_RDONLY);
+    if (source_fd < 0) {
+        return -1; // Error opening source file
+    }
+
+    dest_fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (dest_fd < 0) {
+        close(source_fd);
+        return -2; // Error opening destination file
+    }
+
+    while ((n_read = read(source_fd, buffer, sizeof(buffer))) > 0) {
+        char *out_ptr = buffer;
+        ssize_t n_left = n_read;
+        while (n_left > 0) {
+            n_written = write(dest_fd, out_ptr, n_left);
+            if (n_written <= 0) {
+                if (errno == EINTR) {
+                    continue; // Retry if interrupted by signal
+                }
+                close(source_fd);
+                close(dest_fd);
+                return -3; // Error writing to destination file
+            }
+            n_left -= n_written;
+            out_ptr += n_written;
         }
     }
 
-    // Create or overwrite the projfile with the new revision
-    link(rev_path, projfile_path);
+    close(source_fd);
+    close(dest_fd);
+
+    if (n_read == 0) { // Successfully copied
+        return 0;
+    } else {
+        return -4; // Error reading from source file
+    }
 }
+
 /*
 SH_FN_START
 
@@ -3011,7 +3275,7 @@ As usual our json_* stuff is wrapped in prt2cmp and prt2std.
 
 If there is a block that contains "#systemprompt", then we will send that as the first message.
 
-If state->bootstrapprompt is non-empty, we will send that as the first user message.
+If state->bootstrapprompt is non-empty, we will send that as the first user message, followed by an "OK" reply from the assistant.
 
 To look up the blocks we use find_block(), which returns int, and state->blocks.
 
@@ -3040,6 +3304,7 @@ void send_to_llm(span prompt) {
 
     if (!empty(state->bootstrapprompt)) {
         json_a_extend(&messages, gpt_message(S("user"), state->bootstrapprompt));
+        json_a_extend(&messages, gpt_message(S("assistant"), S("OK")));
     }
 
     json_a_extend(&messages, gpt_message(S("user"), prompt));
@@ -3070,8 +3335,6 @@ Manually written for now.
 */
 
 void handle_llm_response(span res) {
-  //wrs(res);
-  //terpri();
   json o = json_parse(res);
   if (json_is_null(o)) {
     prt("JSON parse failed\n");
@@ -3305,7 +3568,7 @@ There is a global ui_state* variable "state" with a span cbcopy on it.
 Before we do anything else we ensure this is set by calling ensure_conf_var with the message "The command to pipe data to the clipboard on your system. For Mac try \"pbcopy\", Linux \"xclip -i -selection clipboard\", Windows please let me know and I'll add something here".
 
 We run this as a command and pass the span data to its stdin.
-We use the `s()` library method and heap buffer pattern to get a null-terminated string for popen from our span conf var.
+We use the `s_buffer()` library method and heap buffer pattern to get a null-terminated string for popen from our span conf var.
 
 We complain and exit if anything goes wrong as per usual.
 */
@@ -3338,7 +3601,7 @@ First we call ensure_conf_var(state->buildcmd), since we are about to use that s
 Next we print the command that we are going to run and flush, so the user sees something before the compiler process, which may be slow to produce output.
 
 Then we use system(3) on a 2048-char buf which we allocate and statically zero.
-Our s() interface (s(char*,int,span)) lets us set buildcmd as a null-terminated string beginning at buf.
+Our s_buffer() interface (s_buffer(char*,int,span)) lets us set buildcmd as a null-terminated string beginning at buf.
 
 We wait for another keystroke before returning if the compiler process fails, so the user can read the compiler errors (later we'll handle them better).
 (Remember to call flush() before getch() so the user sees the prompt (which is "Build failed, press any key to continue...").)
@@ -3353,7 +3616,7 @@ void compile() {
     ensure_conf_var(&state->buildcmd, S("The build command will be run every time you hit 'B' and should build the code you are editing (typically in projfile)"), nullspan());
     
     char buf[2048] = {0};
-    s(buf, sizeof(buf), state->buildcmd);
+    s_buffer(buf, sizeof(buf), state->buildcmd);
     
     prt("Running command: %s\n", buf);
     flush();
@@ -3393,7 +3656,7 @@ void replace_code_clipboard() {
 
 We get a command (as a span) and we run it, sending the output into the complement of cmp in cmp_space.
 
-Use s() and a char[2048] to prep the popen() call.
+Use s_buffer() and a char[2048] to prep the popen() call.
 
 We use the cmp buffer to store this data, starting from cmp.end (which is always somewhere before the end of the cmp space big buffer).
 
@@ -3408,7 +3671,7 @@ Note: we can assert that the bytes read fits in the cmp space
 
 span pipe_cmd_cmp(span cmd) {
     char cmd_str[2048];
-    s(cmd_str, 2048, cmd);
+    s_buffer(cmd_str, 2048, cmd);
     FILE *pipe = popen(cmd_str, "r");
     assert(pipe != NULL);
 
@@ -3454,7 +3717,7 @@ We then must update the .end of the current file contents, and both the .buf and
 
 As before we then find the current locations of the blocks.
 
-Once all this is done, we call new_rev, passing NULL for the filename argument, since there's no filename here.
+Once all this is done, we call new_rev, passing a null span for the filename, since there's no filename here.
 */
 
 void replace_block_code_part(span new_code) {
@@ -3504,7 +3767,7 @@ void replace_block_code_part(span new_code) {
     find_all_blocks();
 
     // Store a new revision, no filename required
-    new_rev(NULL, file_index);
+    new_rev(nullspan(), file_index);
 }
 /* cmpr_init
 We are called without args and set up some configuration and empty directories to prepare the CWD for use as a cmpr project.
