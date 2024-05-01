@@ -157,6 +157,10 @@ Whenever possible, determine everything from the revstore contents itself.
 
 > cmpr --rvs-server
 
+Or perhaps just
+
+> cmpr --server
+
 
 
 

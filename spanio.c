@@ -766,7 +766,7 @@ span consume_prefix(span prefix, span *input) {
   if (len(*input) < len(prefix) || !span_eq(first_n(*input, len(prefix)), prefix)) {
     return nullspan();
   }
-  span ret = {buf: input->buf};
+  span ret = {.buf = input->buf};
   input->buf += len(prefix);
   ret.end = input->buf;
   return ret;
@@ -1005,28 +1005,28 @@ json json_s(span s) {
 }
 
 json json_n(double n) {
-  json ret = {s: {buf: out.end }};
+  json ret = {.s = {.buf = out.end }};
   prt("%F", n);
   ret.s.end = out.end;
   return ret;
 }
 
 json json_b(int b) {
-  json ret = {s: {buf: out.end }};
+  json ret = {.s = {.buf = out.end }};
   if (b) prt("true"); else prt("false");
   ret.s.end = out.end;
   return ret;
 }
 
 json json_0() {
-  json ret = {s: {buf: out.end }};
+  json ret = {.s = {.buf = out.end }};
   prt("null");
   ret.s.end = out.end;
   return ret;
 }
 
 json json_o() {
-  json ret = {s: {buf: out.end }};
+  json ret = {.s = {.buf = out.end }};
   prt("{}");
   ret.s.end = out.end;
   return ret;
@@ -1053,7 +1053,7 @@ void json_o_extend(json *j, span key, json val) {
 }
 
 json json_a() {
-  json ret = { s: {buf: out.end }};
+  json ret = {.s = {.buf = out.end }};
   prt("[]");
   ret.s.end = out.end;
   return ret;
