@@ -104,6 +104,13 @@
   ✓ the respond with OK thing
   ✓ remove tmpdir and revdir; use cmprdir
   ✓ push v7
+  ✓ fix build issues:
+    ✓ clang
+    ✓ asan
+    ✓ dist directory
+  ✓ ? still lists undo, v, S
+  ✓ DATALOSS.md and systemprompt should be in repo
+  ✓ push
 
 
 
@@ -120,6 +127,13 @@ WHAT WE ARE CURRENTLY DOING:
   → support ollama API
 
 
+    block references
+    clipboard model set automatically
+    cmprdir should be auto-set
+    ~/.cmpr for top-level conf
+    send everything to LLM and create a bootstrap? ctags?
+    ship with some kind of bootstrap bootstrap?
+    jumping between files not just blocks
     idea: maybe go from spec to list of callable functions, approve this, then implementation; allows injecting library call documentation
     idea: (maybe optionally) put the cmp highwater in the ruler and then start unleaking span allocations
   → feature: checksum for block content in memory and on disk
