@@ -111,6 +111,8 @@
   ✓ ? still lists undo, v, S
   ✓ DATALOSS.md and systemprompt should be in repo
   ✓ push
+  ✓ unbreak pagination after I edited the code
+  ✓ push
 
 
 
@@ -124,7 +126,7 @@
 
 
 WHAT WE ARE CURRENTLY DOING:
-  → support ollama API
+  ✓ support ollama API
 
 
     block references

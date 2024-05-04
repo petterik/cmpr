@@ -13,19 +13,10 @@ int add(int a, int b) {
 #include "siphash/siphash.h"
 #include "spanio.c"
 
-#include <stdint.h>
-#include <stddef.h>
-
 typedef uint64_t u64;
 
 #define flush_exit(n) flush(); exit(n)
 
-
-/* Historical libcurl API implementation
-
-#include <curl/curl.h>
-
-*/
 /*
 We record the request and response so we can calculate the cost.
 
@@ -94,7 +85,7 @@ Markdown: md-comment-2-code
 */
 /* #config_fields #conftable ->gpt3.5
 
-We define CONFIG_FIELDS including all our known config settings, as they are used in several places (with X macros).
+Here we define the CONFIG_FIELDS macro, a list of X macro calls, e.g. X(cmprdir), for each config setting.
 
 The config settings are:
 
@@ -127,16 +118,20 @@ We have a projfile type which contains for each file:
 - the contents of the file, also a span
 - a checksum of the contents, a u64
 
-Here we have a typedef for the projfile, and we also call our generic macro MAKE_ARENA to make a corresponding array type called projfiles, choosing 256 for the stack size.
+Here we have a typedef for the projfile.
+
+We also call our generic macro MAKE_ARENA with E = projfile, T = projfiles, choosing 256 for the stack size.
 */
 
 typedef struct {
     span path;
     span language;
     span contents;
+    u64 checksum;
 } projfile;
 
 MAKE_ARENA(projfile, projfiles, 256)
+
 /* #ui_state
 
 We define a struct, ui_state, which we can use to store any information about the UI that we can then pass around to various functions as a single entity.
@@ -205,10 +200,13 @@ void handle_keystroke(char);
 void keyboard_help();
 
 // LLM APIs
+void call_llm(span model, json messages, void (*cb)(span));
 void read_openai_key();
 network_ret call_gpt(json messages, span model); // OpenAI API entry point
-//network_ret call_gpt_network(json); // network helper function
 network_ret call_gpt_curl(span,span,span); // network helper function
+// Ollama support
+network_ret call_ollama(json messages, span model);
+network_ret call_ollama_curl(span,span,span);
 
 // setup and startup
 void handle_args(int argc, char **argv);
@@ -230,7 +228,8 @@ void edit_current_block();
 void rewrite_current_block_with_llm();
 json gpt_message(span role, span message);
 void send_to_llm(span prompt);
-void handle_llm_response(span);
+void handle_openai_response(span, void (*)(span));
+void handle_ollama_response(span, void (*)(span));
 void replace_code_clipboard();
 span block_comment_part(span block);
 span comment_to_prompt(span comment);
@@ -364,6 +363,40 @@ int main(int argc, char** argv) {
     projfiles_arena_free();
     span_arena_free();
     return 0;
+}
+
+/* #call_llm
+
+Here we get a model name, a json object containing chat messages, and a callback function to handle LLM output from a successful API call.
+
+We dispatch on model name.
+If it starts with "gpt" we use the call_gpt function, otherwise call_ollama.
+In either case we get back a network_ret object.
+
+In the case of error we report the error to the user, prompt them to hit any key, and wait with getch so they can read the error.
+
+Otherwise we pass the .response and the callback on to either handle_openai_response, for a gpt model, or handle_ollama_response otherwise.
+*/
+
+void call_llm(span model, json messages, void (*cb)(span)) {
+    network_ret result;
+    if (starts_with(model, S("gpt"))) {
+        result = call_gpt(messages, model);
+    } else {
+        result = call_ollama(messages, model);
+    }
+
+    if (!result.success) {
+        prt("Error: %.*s", len(result.error), result.error.buf);
+        flush();
+        getch(); // User acknowledgment to move past error
+    } else {
+        if (starts_with(model, S("gpt"))) {
+            handle_openai_response(result.response, cb);
+        } else {
+            handle_ollama_response(result.response, cb);
+        }
+    }
 }
 
 /* #read_openai_key
@@ -532,131 +565,113 @@ network_ret call_gpt_curl(span req, span resp, span err) {
     return net_result;
 }
 
-/* (historical) call_gpt libcurl approach
+/* #call_ollama
 
-Here we talk to the OpenAI models via the API.
+Here we talk to an Ollama local model via the API.
 
-We are given a json (the type) which contains an array of messages, and a span which contains a model string, and return network_ret.
+We are given a json which contains an array of messages, and a span which contains a model string, and return a network_ret.
 
-First we set up a json object.
-Wrapped with prt2cmp() and prt2std(), we make a json object and extend it with "messages" as the messages and with "model" as json_s of the model string.
+We set up a json object for the message body.
+We use prt2cmp() so that the json object will be written to cmp space.
+Using the json api functions, we make a json object j and extend it with "messages" as the messages, with "model" as json_s of the model string, and with "stream" set to "false".
+Then we go back to normal with prt2std().
 
-Then we call call_gpt_network to handle the HTTP request.
+We will write the request body and response or error to disk, so first we set up three filenames.
+The filename is <cmprdir>/api_calls/<timestamp>-{req,resp,err} where cmprdir comes from state and the timestamp is in the current time in the format YYYYMMDD-hhmmss.
+To construct the three filenames (-req, -resp, and -err) we set up a base filename first and then append the req, resp, err to it in turn.
 
-We write the request body and the response or error to disk using write_to_file_span, without clobbering since the files should not already exist.
-The filename is <cmprdir>/api_calls/<timestamp>{-req,-resp,-err} where cmprdir comes from state and the timestamp is in the format YYYYMMDD-hhmmss.
+We write the request body j.s to disk, without clobbering as it should not exist, then we call call_ollama_curl to handle the HTTP request, passing in the three filename spans, and we return what it returns.
 
-Note: recall the %.*s pattern when printing spans with prt.
+Functions: clock_gettime, strftime, prt2cmp, json_o, json_o_extend, json_o, S, json_b, prt2std, prs, len, concat, write_to_file_span, call_ollama_curl
+*/
 
-network_ret call_gpt(json messages, span model) {
+network_ret call_ollama(json messages, span model) {
     prt2cmp();
-    json req = json_o();
-    json_o_extend(&req, S("model"), json_s(model));
-    json_o_extend(&req, S("messages"), messages);
+    json j = json_o();
+    json_o_extend(&j, S("messages"), messages);
+    json_o_extend(&j, S("model"), json_s(model));
+    json_o_extend(&j, S("stream"), json_b(0));
     prt2std();
-    network_ret result = call_gpt_network(req);
-    
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm *tm_info = localtime(&ts.tv_sec);
     char timestamp[20];
-    time_t now = time(NULL);
-    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", localtime(&now));
+    strftime(timestamp, 20, "%Y%m%d-%H%M%S", tm_info);
+
+    span base_filename = prs("%.*s/api_calls/%s", len(state->cmprdir), state->cmprdir.buf, timestamp);
+
+    span request_filename = concat(base_filename, S("-req"));
+    span response_filename = concat(base_filename, S("-resp"));
+    span error_filename = concat(base_filename, S("-err"));
+
+    write_to_file_span(j.s, request_filename, 0);
     
-    span req_span = req.s;
-    span resp_span = result.response;
-    span err_span = result.error;
-    
-    char req_filename[256], resp_filename[256], err_filename[256];
-    snprintf(req_filename, sizeof(req_filename), "%.*s/api_calls/%s-req", len(state->cmprdir), state->cmprdir.buf, timestamp);
-    snprintf(resp_filename, sizeof(resp_filename), "%.*s/api_calls/%s-resp", len(state->cmprdir), state->cmprdir.buf, timestamp);
-    snprintf(err_filename, sizeof(err_filename), "%.*s/api_calls/%s-err", len(state->cmprdir), state->cmprdir.buf, timestamp);
-    
-    write_to_file_span(req_span, S(req_filename), 0);
-    if (result.success) {
-        write_to_file_span(resp_span, S(resp_filename), 0);
-    } else {
-        write_to_file_span(err_span, S(err_filename), 0);
-    }
+    network_ret result = call_ollama_curl(request_filename, response_filename, error_filename);
     
     return result;
 }
+
+/* #call_ollama_curl
+
+This is the network part of call_ollama().
+
+We get three filenames, req, resp, and err, respectively, and we return a network_ret.
+
+The HTTP request body as a JSON object has already been written into the req file.
+
+We handle the communication by calling curl.
+We put the binary name in a span, either state->curlbin, or just "curl" if that is empty.
+
+Next we construct a curl command.
+
+We need to tell curl:
+- to be silent except in case of error with -sS,
+- the name of the file with the JSON payload,
+- to set the content-type header,
+- to put the output into the resp file,
+- the API endpoint,
+- and finally to redirect stderr to the err file.
+
+We put the command together with snprintf.
+As always, to print any span x we use `%.*s`, with corresponding arguments len(x) and x.buf.
+
+Don't forget to quote HTTP headers when composing the curl command with -H to protect them from being split by the shell.
+
+Our return value is a network_ret, declared above, which either has success = 1 and the .response contains the body of the API response or success = 0 and .error contains a human-readable error message.
+
+We read the contents of the resp file with read_file_into_cmp and set this on .response.
+If the curl command returned non-zero, we also read the contents of the err file into .err.
+We always read the resp file, even in cases of error.
+
+API endpoint: "http://localhost:11434/api/chat"
 */
-/* (historical) call_gpt_network
 
-Historical libcurl-based implementation.
-
-This is the network part of call_gpt().
-
-We get a json containing the API request POST data (in the inner span .s) and return a successful API response or some error message.
-
-We handle the communication with libcurl, using CURLOPT_POSTFIELDSIZE to explicitly set the length of the data we are sending and CURLOPT_POSTFIELDS just gets the span .buf directly (not a null-terminated string).
-
-Our return value is a network_ret, declared above, which either has success = 1 and the response contains the body of the API response or success = 0 and .error contains a human-readable error message.
-
-(Note that curl_easy_strerror returns a const char* so we have to cast to char* before calling S().)
-
-To collect the response we use a write_callback which passes a span around as the user data.
-We read the API response into cmp space, so this span starts out as an empty span at cmp.end.
-When extending it we check that it does not go past cmp_space + BUF_SZ (and complain and exit if that happens).
-
-API endpoint: "https://api.openai.com/v1/chat/completions"
-
-The API key (Bearer token) is in state->openai_key, use something like:
-    char auth_header[256];
-    sprintf(auth_header, "Authorization: Bearer %.*s", len(state->openai_key), state->openai_key.buf);
-
-// historical implementation:
-
-size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
-    size_t total_size = size * nmemb;
-    span *s = (span *)userdata;
-    if (s->end + total_size > cmp_space + BUF_SZ) {
-        exit_with_error("Buffer overflow in network response");
-    }
-    memcpy(s->end, ptr, total_size);
-    s->end += total_size;
-    return total_size;
-}
-
-network_ret call_gpt_network(json request_json) {
-    CURL *curl;
-    CURLcode res;
-    network_ret ret;
-    span post_data = request_json.s;
+network_ret call_ollama_curl(span req, span resp, span err) {
+    span curl_bin = empty(state->curlbin) ? S("curl") : state->curlbin;
+    char cmd[1024]; 
     
-    curl = curl_easy_init();
-    if (curl) {
-        span response_span = {cmp.end, cmp.end};
-        struct curl_slist *headers = NULL;
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        char auth_header[1024];
-        snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %.*s", len(state->openai_key), state->openai_key);
-        headers = curl_slist_append(headers, auth_header);
+    snprintf(cmd, sizeof(cmd), 
+             "%.*s -sS -X POST -H \"Content-Type: application/json\" -d @%.*s -o %.*s http://localhost:11434/api/chat 2> %.*s", 
+             len(curl_bin), curl_bin.buf, 
+             len(req), req.buf, 
+             len(resp), resp.buf, 
+             len(err), err.buf);
 
-        curl_easy_setopt(curl, CURLOPT_URL, "https://api.openai.com/v1/chat/completions");
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len(post_data));
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.buf);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_span);
+    int curl_result = system(cmd);
+    network_ret ret;
+    ret.response = read_file_into_cmp(resp);
 
-        res = curl_easy_perform(curl);
-        if (res == CURLE_OK) {
-            ret.success = 1;
-            ret.response = response_span;
-        } else {
-            ret.success = 0;
-            ret.error = S((char*)curl_easy_strerror(res));
-        }
-
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
-    } else {
+    if (curl_result != 0) {
         ret.success = 0;
-        ret.error = S("Failed to initialize CURL");
+        ret.error = read_file_into_cmp(err);
+    } else {
+        ret.success = 1;
     }
 
     return ret;
 }
-*/
+
 /* #print_config
 
 Debugging helper.
@@ -1459,7 +1474,7 @@ void page_down() {
 
     block_copy.buf = scrolled_off.end;
     int lines_for_screen = content_rows;
-    //span remainder = count_physical_lines(block_copy, &lines_for_screen);
+    count_physical_lines(block_copy, &lines_for_screen);
 
     if (lines_for_screen > 0) {
         state->scrolled_lines -= lines_for_screen;
@@ -3281,10 +3296,7 @@ To look up the blocks we use find_block(), which returns int, and state->blocks.
 
 Then in any case we send our input prompt as the last user message, and send the whole messages array to the api.
 
-We call call_gpt() with the messages and state->model.
-
-If the request fails we print the .error and let the user hit a key before returning to read it.
-If it succeeded, we call handle_llm_response with the .response.
+We call call_llm() with state->model, the messages, and a function pointer to handle_llm_response.
 
 Manually edited.
 */
@@ -3310,18 +3322,9 @@ void send_to_llm(span prompt) {
     json_a_extend(&messages, gpt_message(S("user"), prompt));
     prt2std();
 
-    network_ret result = call_gpt(messages, state->model);
-
-    if (!result.success) {
-        prt("Error: %.*s\n", len(result.error), result.error);
-        flush();
-        getch();
-    } else {
-        handle_llm_response(result.response);
-    }
+    call_llm(state->model, messages, &replace_block_code_part);
 }
-
-/* #handle_llm_response
+/* #handle_openai_response
 
 Here we get a span response from an LLM API such as OpenAI's.
 
@@ -3334,7 +3337,7 @@ Otherwise, we pull the content out and pass it on.
 Manually written for now.
 */
 
-void handle_llm_response(span res) {
+void handle_openai_response(span res, void (*cb)(span)) {
   json o = json_parse(res);
   if (json_is_null(o)) {
     prt("JSON parse failed\n");
@@ -3354,7 +3357,36 @@ void handle_llm_response(span res) {
   //terpri();
   span content_s = json_s2s(content, &cmp, cmp_space + BUF_SZ);
   //wrs(content_s);
-  replace_block_code_part(strip_markdown_codeblock(content_s));
+  cb(strip_markdown_codeblock(content_s));
+  //terpri();
+  //flush();
+  //exit(0);
+}
+
+/* #handle_ollama_response
+
+This is similar to handle_openai_response but for ollama API responses, and also hand-written.
+*/
+
+void handle_ollama_response(span res, void (*cb)(span)) {
+  json o = json_parse(res);
+  if (json_is_null(o)) {
+    prt("JSON parse failed\n");
+    wrs(res);terpri();
+    flush();
+    exit(0);
+  }
+  json message = json_key(S("message"), o);
+  //wrs(message.s);
+  //terpri();
+  json content = json_key(S("content"), message);
+  //wrs(content.s);
+  //terpri();
+  span content_s = json_s2s(content, &cmp, cmp_space + BUF_SZ);
+  //wrs(content_s);
+  //flush();
+  //sleep(1);
+  cb(strip_markdown_codeblock(content_s));
   //terpri();
   //flush();
   //exit(0);
@@ -3520,43 +3552,40 @@ span comment_to_prompt(span comment) {
 
 /* #strip_markdown_codeblock
 
-We are given a span (the response from an LLM) and we find the code inside a code block.
+We are given a span and we find the code inside a code block, if there is one.
 
 First we declare a span that we will return.
 
-We iterate over all the lines and find those that start with "```".
+We make a copy of the input and iterate over all the lines and find those that start with "```".
 
 If there are not exactly two such lines we return the input unchanged.
 
 Otherwise, our return span starts from the line after the first "```" line and ends with the line before the second one.
 */
 
-span strip_markdown_codeblock(span response) {
-    span ret = response;
-    int count = 0;
-    span line;
-    span start = nullspan();
-    span end = nullspan();
+span strip_markdown_codeblock(span input) {
+    span ret = input; // default to returning unchanged
+    span copy = input;
 
-    while (!empty(response)) {
-        line = next_line(&response);
+    int count = 0;
+    span marker_lines[2];
+
+    span line;
+    while (!empty(copy)) {
+        line = next_line(&copy);
         if (starts_with(line, S("```"))) {
-            count++;
-            if (count == 1) {
-                start = response;
-            } else if (count == 2) {
-                end = line;
-                break;
+            if (count < 2) {
+                marker_lines[count] = line;
             }
+            count++;
         }
     }
 
-    if (count != 2) {
-        return response;
+    if (count == 2) {
+        ret.buf = marker_lines[0].end + 1; // start after the first ```
+        ret.end = marker_lines[1].buf; // end before the second ```
     }
 
-    ret.buf = start.buf;
-    ret.end = end.buf;
     return ret;
 }
 

@@ -72,6 +72,7 @@ JSON
 - make_json(span): return a json wrapper of the span in O(1); the span must be known to be valid json already; rarely used.
 - json_s2s(json,span*,u8*): converts json string $1 into an unquoted string in $2 (not exceeding buffer end $3); returns a span.
 - json_parse_prefix(span*): not usually called directly, but can be used to parse a json value off the front of a buffer, shortening it.
+- Every json value wraps a span .s, which can be accessed directly whenever the string value of the json is needed.
 
 typedef struct { u8* buf; u8* end; } span; // the type of span
 
@@ -80,7 +81,7 @@ typedef struct { span *s; int n; } spans; // the type of spans, given by spans_a
 We have a generic array implementation using arena allocation.
 
 - Call MAKE_ARENA(E,T,STACK_SIZE) to define array type T for elements of type E.
-  - T has .a and .n on it of type E* and int resp.
+- T will have .a and .n on it of type E* and int resp.
 - Use T_arena_alloc(N) and T_arena_free(), typically in main() or similar.
 - T_alloc(N) returns an array of type T, with .n = .cap = N.
 - T_arena_push() and T_arena_pop() manage arena allocation stack.

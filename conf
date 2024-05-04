@@ -1,12 +1,10 @@
-projdir: 
-revdir: cmpr/revs
-tmpdir: cmpr/tmp
 cmprdir: cmpr
 buildcmd: (cd cmpr && make debug)
 bootstrap: (chmod +x cmpr/bootstrap.sh && cmpr/bootstrap.sh)
 cbcopy: xclip -i -selection clipboard
 cbpaste: xclip -o -selection clipboard
-model: gpt-3.5-turbo
+curlbin: 
+model: llama3:70b
 
 language: C
 file: cmpr/conf
@@ -17,5 +15,5 @@ file: cmpr/cmpr.c
 file: cmpr/spanio.c
 file: cmpr/bootstrap.sh
 file: cmpr/doc/second
-file: cmpr/doc/plans.txt
 file: cmpr/DATALOSS.md
+file: cmpr/doc/plans.txt
